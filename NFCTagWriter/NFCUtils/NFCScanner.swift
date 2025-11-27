@@ -213,15 +213,20 @@ class NFCScanner: NSObject, NFCTagReaderSessionDelegate {
                     switch result {
                     case .success(let message):
                         // Success! You have the NFCNDEFMessage object back.
-                        // Let's print the first record's payload to prove it.
-                        if let firstRecord = message.records.first,
-                           let text = String(data: firstRecord.payload, encoding: .iso2022JP) {
-                            // Note: URI payloads have a prefix byte you might see
-                            readMsg = "Read: \(text)"
-                            self.textRead = text
-                            print(readMsg)
+                        // Parse the first record's payload to extract text
+                        if let firstRecord = message.records.first {
+                            let text = self.parseNDEFTextPayload(firstRecord.payload)
+                            if !text.isEmpty {
+                                readMsg = "Read: \(text)"
+                                self.textRead = text
+                                print(readMsg)
+                            } else {
+                                readMsg = "Read NDEF successfully! Decode failed."
+                                self.textRead = "N/A"
+                                print(readMsg)
+                            }
                         } else {
-                            readMsg = "Read NDEF successfully! Decode failed."
+                            readMsg = "Read NDEF successfully! No records found."
                             self.textRead = "N/A"
                             print(readMsg)
                         }
@@ -237,6 +242,40 @@ class NFCScanner: NSObject, NFCTagReaderSessionDelegate {
                     }
                 }
             }
+        }
+    }
+    
+    // Parse NDEF text payload by removing language prefix
+    // NDEF text record format: [Status Byte (UTF-16 flag + lang length)] [Language Code] [Text Content]
+    private func parseNDEFTextPayload(_ payload: Data) -> String {
+        guard payload.count > 0 else { return "" }
+        
+        // First byte is the status byte
+        let statusByte = payload[0]
+        
+        // Bit 7 indicates UTF-16 (1) or UTF-8 (0)
+        let isUTF16 = (statusByte & 0x80) != 0
+        
+        // Bits 6-0 indicate the language code length
+        let langCodeLength = Int(statusByte & 0x3F)
+        
+        // Check if we have enough bytes for the language code
+        guard payload.count > langCodeLength else { return "" }
+        
+        // Extract language code (for debugging, but we don't need it)
+        // let langCode = String(data: payload.subdata(in: 1..<(1 + langCodeLength)), encoding: .utf8) ?? ""
+        
+        // Extract the text content (everything after the language code)
+        let textStartIndex = 1 + langCodeLength
+        guard payload.count > textStartIndex else { return "" }
+        
+        let textData = payload.subdata(in: textStartIndex..<payload.count)
+        
+        // Decode based on UTF-16 flag
+        if isUTF16 {
+            return String(data: textData, encoding: .utf16) ?? ""
+        } else {
+            return String(data: textData, encoding: .utf8) ?? ""
         }
     }
     

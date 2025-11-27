@@ -6,6 +6,16 @@
 //
 import CoreNFC
 
+// Tag Information Structure
+struct NFCTagInfo {
+    var serialNumber: String = ""
+    var memorySize: String = ""
+    var tagType: String = ""
+    var ndefMessageSize: String = ""
+    var isPasswordProtected: Bool = false
+    var details: String = ""
+}
+
 // 1. Define the Delegate and Session Management
 class NFCScanner: NSObject, NFCTagReaderSessionDelegate {
     func tagReaderSessionDidBecomeActive(_ session: NFCTagReaderSession) {
@@ -24,6 +34,7 @@ class NFCScanner: NSObject, NFCTagReaderSessionDelegate {
     var onWriteCompleted: ((String?, Error?) -> Void)?
     var onReadCompleted: ((String, String?, Error?) -> Void)?
     var onSetPasswordCompleted: ((String?, Error?) -> Void)?
+    var onTagInfoCompleted: ((NFCTagInfo?, Error?) -> Void)?
     var textToWrite: String = ""
     var textRead: String = ""
 
@@ -45,6 +56,13 @@ class NFCScanner: NSObject, NFCTagReaderSessionDelegate {
         // Use NFCTagReaderSession to detect specific tag protocols (ISO14443 for MIFARE/NTAG)
         session = NFCTagReaderSession(pollingOption: .iso14443, delegate: self, queue: nil)
         session?.alertMessage = "Hold your iPhone near the NFC tag to set password."
+        session?.begin()
+    }
+    
+    func beginReadingTagInfo() {
+        // Use NFCTagReaderSession to detect specific tag protocols (ISO14443 for MIFARE/NTAG)
+        session = NFCTagReaderSession(pollingOption: .iso14443, delegate: self, queue: nil)
+        session?.alertMessage = "Hold your iPhone near the NFC tag to read information."
         session?.begin()
     }
 
@@ -70,7 +88,10 @@ class NFCScanner: NSObject, NFCTagReaderSessionDelegate {
                self.currentTag = miFareTag
                
                // Check which operation to perform
-               if self.onSetPasswordCompleted != nil {
+               if self.onTagInfoCompleted != nil {
+                   // Read tag info operation (no authentication needed for basic info)
+                   self.readTagInfo(miFareTag: miFareTag, session: session)
+               } else if self.onSetPasswordCompleted != nil {
                    // Set password operation
                    self.setPassword(miFareTag: miFareTag, session: session)
                } else {
@@ -241,6 +262,157 @@ class NFCScanner: NSObject, NFCTagReaderSessionDelegate {
                         self.onReadCompleted?(self.textRead, readMsg, err)
                     }
                 }
+            }
+        }
+    }
+    
+    // Read tag information and capabilities
+    func readTagInfo(miFareTag: NFCMiFareTag, session: NFCTagReaderSession) {
+        var tagInfo = NFCTagInfo()
+        
+        // Read pages 0-3 to get serial number and capability container
+        // Page 0-2: Serial number (UID) - 7 bytes
+        // Page 3: Capability Container (CC)
+        let readCommand = Data([0x30, 0x00]) // Read from page 0 (returns 4 pages)
+        
+        miFareTag.sendMiFareCommand(commandPacket: readCommand) { [weak self] (response: Data, error: Error?) in
+            guard let self = self else { return }
+            
+            if let error = error {
+                self.currentTag = nil
+                session.invalidate(errorMessage: "Failed to read tag info: \(error.localizedDescription)")
+                self.onTagInfoCompleted?(nil, error)
+                return
+            }
+            
+            guard response.count >= 16 else {
+                self.currentTag = nil
+                session.invalidate(errorMessage: "Invalid tag response")
+                self.onTagInfoCompleted?(nil, NSError(domain: "NFCScanner", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid tag response"]))
+                return
+            }
+            
+            // Extract serial number from pages 0-2 (first 7 bytes)
+            let serialBytes = response.prefix(7)
+            tagInfo.serialNumber = serialBytes.map { String(format: "%02X", $0) }.joined(separator: ":")
+            
+            // Extract Capability Container from page 3 (bytes 12-15)
+            let ccPage = response.subdata(in: 12..<16)
+            
+            // CC structure: [Magic (0xE1), Version, SIZE(MLEN), Access]
+            if ccPage[0] == 0xE1 {
+                let mlen = Int(ccPage[2])
+                let totalBytes = mlen * 8
+                let totalPages = totalBytes / 4
+                
+                tagInfo.memorySize = "\(totalBytes) bytes (\(totalPages) pages)"
+                tagInfo.ndefMessageSize = "\(totalBytes) bytes"
+                
+                // Determine tag type based on memory size
+                switch totalBytes {
+                case 180:
+                    tagInfo.tagType = "NTAG213"
+                case 504:
+                    tagInfo.tagType = "NTAG215"
+                case 888:
+                    tagInfo.tagType = "NTAG216"
+                default:
+                    tagInfo.tagType = "NTAG (Unknown variant)"
+                }
+                
+                // Read AUTH0 page (0x83) and ACCESS page (0x86) to check if password protection is enabled
+                // READ command reads 4 pages, so reading 0x83 gives us 0x83-0x86 (16 bytes total)
+                let readAuth0Command = Data([0x30, 0x83])
+                miFareTag.sendMiFareCommand(commandPacket: readAuth0Command) { [weak self] (auth0Response: Data, auth0Error: Error?) in
+                    guard let self = self else { return }
+                    
+                    var auth0: UInt8 = 0xFF
+                    var accessByte: UInt8 = 0x00
+                    
+                    if let error = auth0Error {
+                        print("⚠️ Error reading AUTH0/ACCESS pages: \(error.localizedDescription)")
+                    } else if auth0Response.count >= 16 {
+                        // Response structure when reading from page 0x83:
+                        // Bytes 0-3:   Page 0x83 [AUTH0, byte1, byte2, byte3]
+                        // Bytes 4-7:   Page 0x84
+                        // Bytes 8-11:  Page 0x85 [PWD bytes]
+                        // Bytes 12-15: Page 0x86 [PACK_H, PACK_L, ACCESS, RFUI]
+                        
+                        // AUTH0 is the first byte of page 0x83
+                        auth0 = auth0Response[0]
+                        
+                        // ACCESS is the third byte of page 0x86 (byte 14 of response)
+                        accessByte = auth0Response[14]
+                        
+                        print("📋 Tag Info Debug:")
+                        print("   AUTH0: 0x\(String(format: "%02X", auth0))")
+                        print("   ACCESS: 0x\(String(format: "%02X", accessByte))")
+                        print("   Response length: \(auth0Response.count) bytes")
+                        print("   Full response: \(auth0Response.map { String(format: "%02X", $0) }.joined(separator: " "))")
+                        
+                        // Password protection status:
+                        // - AUTH0 != 0xFF means password protection is configured
+                        // - ACCESS bit 7 (0x80) means password protection is actively enforced
+                        // If AUTH0 is set but ACCESS is not, protection is configured but not enforced
+                        let hasAuth0Configured = (auth0 != 0xFF)
+                        let hasAccessEnabled = ((accessByte & 0x80) != 0)
+                        
+                        // Password protection is considered enabled if AUTH0 is configured
+                        // (even if ACCESS isn't set, the configuration exists)
+                        tagInfo.isPasswordProtected = hasAuth0Configured
+                        
+                        print("   AUTH0 configured: \(hasAuth0Configured)")
+                        print("   ACCESS enabled: \(hasAccessEnabled)")
+                        print("   Password Protected: \(tagInfo.isPasswordProtected)")
+                    } else {
+                        print("⚠️ Invalid AUTH0/ACCESS response length: \(auth0Response.count) bytes (expected 16)")
+                    }
+                    
+                    // Build details string
+                    var details: [String] = []
+                    details.append("Serial: \(tagInfo.serialNumber)")
+                    details.append("Type: \(tagInfo.tagType)")
+                    details.append("Memory: \(tagInfo.memorySize)")
+                    details.append("NDEF Size: \(tagInfo.ndefMessageSize)")
+                    
+                    // Show password protection status with more detail
+                    if tagInfo.isPasswordProtected {
+                        let accessEnabled = ((accessByte & 0x80) != 0)
+                        if accessEnabled {
+                            details.append("Password Protected: Yes (Active)")
+                        } else {
+                            details.append("Password Protected: Yes (Configured but not enforced)")
+                        }
+                    } else {
+                        details.append("Password Protected: No")
+                    }
+                    
+                    if ccPage.count >= 4 {
+                        details.append("CC Version: \(String(format: "0x%02X", ccPage[1]))")
+                        details.append("CC Access: \(String(format: "0x%02X", ccPage[3]))")
+                    }
+                    
+                    // Add AUTH0 and ACCESS info for debugging
+                    details.append("AUTH0: \(String(format: "0x%02X", auth0))")
+                    details.append("ACCESS: \(String(format: "0x%02X", accessByte))")
+                    
+                    // Show what ACCESS value means
+                    if (accessByte & 0x80) == 0 {
+                        details.append("Note: ACCESS bit 7 not set - password not enforced")
+                    }
+                    
+                    tagInfo.details = details.joined(separator: "\n")
+                    
+                    self.currentTag = nil
+                    session.invalidate()
+                    self.onTagInfoCompleted?(tagInfo, nil)
+                }
+            } else {
+                tagInfo.tagType = "Unknown (Not NDEF formatted)"
+                tagInfo.details = "Serial: \(tagInfo.serialNumber)\nTag is not NDEF formatted"
+                self.currentTag = nil
+                session.invalidate()
+                self.onTagInfoCompleted?(tagInfo, nil)
             }
         }
     }

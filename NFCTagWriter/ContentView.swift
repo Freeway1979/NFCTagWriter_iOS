@@ -16,17 +16,19 @@ struct ContentView: View {
     
     @State private var textRead: String = ""
     @State private var textToWrite: String = "resume rule 129"
+    @State private var tagInfo: NFCTagInfo? = nil
     
     var body: some View {
-        VStack(spacing: 20) {
-            Image(systemName: "sensor.tag.radiowaves.forward")
-                .imageScale(.large)
-                .foregroundStyle(.tint)
-                .font(.system(size: 50))
-            
-            Text("NFC Tag Reader/Writer")
-                .font(.title2)
-                .fontWeight(.bold)
+        ScrollView {
+            VStack(spacing: 20) {
+                Image(systemName: "sensor.tag.radiowaves.forward")
+                    .imageScale(.large)
+                    .foregroundStyle(.tint)
+                    .font(.system(size: 50))
+                
+                Text("NFC Tag Reader/Writer")
+                    .font(.title2)
+                    .fontWeight(.bold)
             
             // Display read result above Read Button
             VStack(alignment: .leading, spacing: 8) {
@@ -102,10 +104,27 @@ struct ContentView: View {
             }
             .padding(.horizontal)
             
+            // Read Tag Info Button
+            Button(action: {
+                readTagInfo()
+            }) {
+                HStack {
+                    Image(systemName: "info.circle.fill")
+                    Text("Read Tag Information")
+                }
+                .font(.headline)
+                .foregroundColor(.white)
+                .padding()
+                .frame(maxWidth: .infinity)
+                .background(Color.purple)
+                .cornerRadius(10)
+            }
+            .padding(.horizontal)
+            
             // Display read results
             if !nfcMessage.isEmpty {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Read Result:")
+                    Text("NFC Message:")
                         .font(.headline)
                     Text(nfcMessage)
                         .font(.body)
@@ -118,7 +137,7 @@ struct ContentView: View {
             
             if !nfcError.isEmpty {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Error:")
+                    Text("NFC Error:")
                         .font(.headline)
                         .foregroundColor(.red)
                     Text(nfcError)
@@ -131,9 +150,28 @@ struct ContentView: View {
                 .padding()
             }
             
-            Spacer()
+            // Tag Information Display at the bottom
+            if let info = tagInfo {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Tag Information:")
+                        .font(.headline)
+                        .foregroundColor(.secondary)
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(info.details.components(separatedBy: "\n"), id: \.self) { line in
+                            Text(line)
+                                .font(.system(.caption, design: .monospaced))
+                        }
+                    }
+                    .padding()
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.blue.opacity(0.1))
+                    .cornerRadius(8)
+                }
+                .padding()
+            }
+            }
+            .padding()
         }
-        .padding()
     }
     
     private func readNFC() {
@@ -154,6 +192,26 @@ struct ContentView: View {
         }
         
         scanner.beginReading()
+    }
+    
+    private func readTagInfo() {
+        nfcError = ""
+        scanner.onReadCompleted = nil
+        scanner.onWriteCompleted = nil
+        scanner.onSetPasswordCompleted = nil
+        scanner.onTagInfoCompleted = { info, error in
+            DispatchQueue.main.async {
+                if let error = error {
+                    // Show error but don't clear existing tag info
+                    nfcError = "Tag Info Error: \(error.localizedDescription)"
+                    print("Tag info read error: \(error.localizedDescription)")
+                } else if let info = info {
+                    tagInfo = info
+                    nfcError = ""
+                }
+            }
+        }
+        scanner.beginReadingTagInfo()
     }
     
     private func writeNFC() {

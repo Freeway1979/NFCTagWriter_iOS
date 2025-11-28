@@ -31,11 +31,11 @@ struct NTAG21XPasswordPages {
     // NDEF size is what's reported in CC, but actual tag has more memory
     static func totalMemorySize(for ndefBytes: Int) -> Int {
         switch ndefBytes {
-        case 144, 180:  // NTAG213 NDEF sizes
+        case 144:  // NTAG213 NDEF sizes
             return 180  // Actual total: 180 bytes (45 pages)
-        case 496, 504:  // NTAG215 NDEF sizes
+        case 496:  // NTAG215 NDEF sizes
             return 504  // Actual total: 504 bytes (126 pages)
-        case 872, 888:  // NTAG216 NDEF sizes
+        case 872:  // NTAG216 NDEF sizes
             return 888  // Actual total: 888 bytes (222 pages)
         default:
             return ndefBytes  // Fallback: assume NDEF size = total size
@@ -48,7 +48,7 @@ struct NTAG21XPasswordPages {
         let totalPages = totalBytes / 4
         
         switch ndefBytes {
-        case 144, 180:  // NTAG213 NDEF memory size
+        case 144:  // NTAG213 NDEF memory size
             // NTAG213 (45 pages total)
             return NTAG21XPasswordPages(
                 tagType: "NTAG213",
@@ -59,7 +59,7 @@ struct NTAG21XPasswordPages {
                 totalMemoryBytes: totalBytes,
                 totalMemoryPages: totalPages
             )
-        case 496, 504:  // NTAG215 NDEF memory size
+        case 496:  // NTAG215 NDEF memory size
             // NTAG215 (126 pages total)
             return NTAG21XPasswordPages(
                 tagType: "NTAG215",
@@ -70,7 +70,7 @@ struct NTAG21XPasswordPages {
                 totalMemoryBytes: totalBytes,
                 totalMemoryPages: totalPages
             )
-        case 872, 888:  // NTAG216 NDEF memory size
+        case 872:  // NTAG216 NDEF memory size
             // NTAG216 (222 pages total)
             return NTAG21XPasswordPages(
                 tagType: "NTAG216",
@@ -122,21 +122,25 @@ class NFCScanner: NSObject, NFCTagReaderSessionDelegate {
     // Define a 4-byte password (e.g., "ABCD" converted to hex bytes)
     var passwordData: Data { Data(textPassword.prefix(4).utf8) }
     
-    func beginWriting() {
+    func beginWriting(password: String, textToWrite: String) {
+        textPassword = password
+        self.textToWrite = textToWrite
         currentAction = .write
         session = NFCTagReaderSession(pollingOption: .iso14443, delegate: self, queue: nil)
         session?.alertMessage = "Hold your iPhone near the NFC tag to write."
         session?.begin()
     }
     
-    func beginReading() {
+    func beginReading(password: String) {
+        textPassword = password
         currentAction = .read
         session = NFCTagReaderSession(pollingOption: .iso14443, delegate: self, queue: nil)
         session?.alertMessage = "Hold your iPhone near the NFC tag to read."
         session?.begin()
     }
     
-    func beginSettingPassword() {
+    func beginSettingPassword(password: String) {
+        textPassword = password
         currentAction = .setPassword
         session = NFCTagReaderSession(pollingOption: .iso14443, delegate: self, queue: nil)
         session?.alertMessage = "Hold your iPhone near the NFC tag to set password."
@@ -446,11 +450,11 @@ class NFCScanner: NSObject, NFCTagReaderSessionDelegate {
                     // Tag doesn't support password protection - determine type from NDEF memory size
                     let tagType: String
                     switch ndefBytes {
-                    case 144, 180:  // NTAG213 NDEF sizes
+                    case 144:  // NTAG213 NDEF sizes
                         tagType = "NTAG213"
-                    case 496, 504:  // NTAG215 NDEF sizes
+                    case 496:  // NTAG215 NDEF sizes
                         tagType = "NTAG215"
-                    case 872, 888:  // NTAG216 NDEF sizes
+                    case 872:  // NTAG216 NDEF sizes
                         tagType = "NTAG216"
                     default:
                         tagType = "NTAG (Unknown variant)"
@@ -794,7 +798,7 @@ class NFCScanner: NSObject, NFCTagReaderSessionDelegate {
                     print("✅ AUTH0 set to 0x04 on page 0x\(String(format: "%02X", passwordPages.auth0Page))")
                     
                     // Step 3: Set ACCESS - enables password protection
-                    // ACCESS = 0x80 enables password protection, PACK = 0x0000 (no PACK required)
+                    // ACCESS = 0x80 enables password read/write protection, PACK = 0x0000 (no PACK required)
                     print("\nStep 3: Setting ACCESS to enable password protection on page 0x\(String(format: "%02X", passwordPages.accessPage))...")
                     let accessPageData = Data([0xA2, passwordPages.accessPage, 0x00, 0x00, 0x80, 0x00]) // PACK=0x0000, ACCESS=0x80
                     

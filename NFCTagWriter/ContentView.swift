@@ -195,7 +195,7 @@ struct ContentView: View {
             }
         }
         
-        scanner.beginReading()
+        scanner.beginReading(password: textPassword)
     }
     
     private func readTagInfo() {
@@ -223,7 +223,6 @@ struct ContentView: View {
         nfcError = ""
         scanner.onReadCompleted = nil
         scanner.onSetPasswordCompleted = nil
-        scanner.textToWrite = textToWrite
         scanner.onWriteCompleted = { (msg, error) in
             DispatchQueue.main.async {
                 if let error = error {
@@ -233,7 +232,7 @@ struct ContentView: View {
                 }
             }
         }
-        scanner.beginWriting()
+        scanner.beginWriting(password: textPassword, textToWrite: textToWrite)
     }
     
     private func setPassword() {
@@ -256,7 +255,7 @@ struct ContentView: View {
                 }
             }
         }
-        scanner.beginSettingPassword()
+        scanner.beginSettingPassword(password: textPassword)
     }
 }
 

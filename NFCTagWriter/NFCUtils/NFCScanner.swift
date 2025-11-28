@@ -797,13 +797,12 @@ class NFCScanner: NSObject, NFCTagReaderSessionDelegate {
                     
                     print("✅ AUTH0 set to 0x04 on page 0x\(String(format: "%02X", passwordPages.auth0Page))")
                     
-                    // Step 3: Set ACCESS - enables password protection
-                    // ACCESS = 0x80 enables password read/write protection, PACK = 0x0000 (no PACK required)
-                    print("\nStep 3: Setting ACCESS to enable password protection on page 0x\(String(format: "%02X", passwordPages.accessPage))...")
-                    let accessPageData = Data([0xA2, passwordPages.accessPage, 0x00, 0x00, 0x80, 0x00]) // PACK=0x0000, ACCESS=0x80
+                    // Step 3: Read current ACCESS page to preserve existing values, then set ACCESS bit
+                    // ACCESS = 0x80 enables password read/write protection
+                    print("\nStep 3: Reading current ACCESS page 0x\(String(format: "%02X", passwordPages.accessPage)) to preserve values...")
+                    let readAccessCommand = Data([0x30, passwordPages.accessPage])
                     
-                    // Use the original tag reference directly
-                    miFareTag.sendMiFareCommand(commandPacket: accessPageData) { [weak self, unowned tag = miFareTag] (response: Data, error: Error?) in
+                    miFareTag.sendMiFareCommand(commandPacket: readAccessCommand) { [weak self, unowned tag = miFareTag, passwordPages] (readResponse: Data, readError: Error?) in
                         guard let self = self else { return }
                         
                         // Verify tag is still the same reference
@@ -815,13 +814,12 @@ class NFCScanner: NSObject, NFCTagReaderSessionDelegate {
                             return
                         }
                         
-                        if let error = error {
+                        if let error = readError {
                             let nsError = error as NSError
-                            var errorMsg = "Failed to set ACCESS: \(error.localizedDescription)"
+                            var errorMsg = "Failed to read ACCESS page: \(error.localizedDescription)"
                             
                             if nsError.code == 100 || error.localizedDescription.contains("connection lost") {
                                 errorMsg += "\n\nTip: Keep the tag steady and close to your device. Try again."
-                                errorMsg += "\nPassword and AUTH0 were set, but ACCESS was not. You may need to try again."
                             }
                             
                             print("❌ \(errorMsg)")
@@ -831,15 +829,70 @@ class NFCScanner: NSObject, NFCTagReaderSessionDelegate {
                             return
                         }
                         
-                        print("✅ ACCESS set to enable password protection")
+                        guard readResponse.count >= 4 else {
+                            let errorMsg = "Invalid response when reading ACCESS page"
+                            print("❌ \(errorMsg)")
+                            self.currentTag = nil
+                            session.invalidate(errorMessage: errorMsg)
+                            self.onSetPasswordCompleted?(nil, NSError(domain: "NFCScanner", code: -1, userInfo: [NSLocalizedDescriptionKey: errorMsg]))
+                            return
+                        }
                         
-                        // Complete the operation without verification to avoid connection loss
-                        let successMsg = "Password set successfully! Tag is now password-protected."
-                        session.alertMessage = successMsg
-                        self.currentTag = nil
-                        session.invalidate()
-                        print("✅ \(successMsg)")
-                        self.onSetPasswordCompleted?(successMsg, nil)
+                        // Extract current ACCESS page values
+                        // ACCESS page structure: [PACK[0], PACK[1], ACCESS, RFUI]
+                        let currentPackLow = readResponse[0]
+                        let currentPackHigh = readResponse[1]
+                        let currentAccess = readResponse[2]
+                        let currentRFUI = readResponse[3]
+                        
+                        print("   Current ACCESS page: PACK=0x\(String(format: "%02X%02X", currentPackHigh, currentPackLow)), ACCESS=0x\(String(format: "%02X", currentAccess)), RFUI=0x\(String(format: "%02X", currentRFUI))")
+                        
+                        // Set ACCESS bit 7 (0x80) while preserving other bits
+                        let newAccess = currentAccess | 0x80
+                        
+                        print("\nStep 3b: Setting ACCESS to 0x\(String(format: "%02X", newAccess)) (enabling bit 7) on page 0x\(String(format: "%02X", passwordPages.accessPage))...")
+                        let accessPageData = Data([0xA2, passwordPages.accessPage, currentPackLow, currentPackHigh, newAccess, currentRFUI])
+                        
+                        // Use the original tag reference directly
+                        miFareTag.sendMiFareCommand(commandPacket: accessPageData) { [weak self, unowned tag = miFareTag] (response: Data, error: Error?) in
+                        guard let self = self else { return }
+                        
+                        // Verify tag is still the same reference
+                        guard self.currentTag === tag else {
+                            let errorMsg = "Tag reference changed. Please keep the tag near your device and try again."
+                            print("❌ \(errorMsg)")
+                            session.invalidate(errorMessage: errorMsg)
+                            self.onSetPasswordCompleted?(nil, NSError(domain: "NFCScanner", code: 100, userInfo: [NSLocalizedDescriptionKey: errorMsg]))
+                            return
+                        }
+                        
+                            if let error = error {
+                                let nsError = error as NSError
+                                var errorMsg = "Failed to set ACCESS: \(error.localizedDescription)"
+                                
+                                if nsError.code == 100 || error.localizedDescription.contains("connection lost") {
+                                    errorMsg += "\n\nTip: Keep the tag steady and close to your device. Try again."
+                                    errorMsg += "\nPassword and AUTH0 were set, but ACCESS was not. You may need to try again."
+                                }
+                                
+                                print("❌ \(errorMsg)")
+                                self.currentTag = nil
+                                session.invalidate(errorMessage: errorMsg)
+                                self.onSetPasswordCompleted?(nil, error)
+                                return
+                            }
+                            
+                            print("✅ ACCESS byte written successfully")
+                            print("   Note: Remove the tag from the RF field and re-present it for protection to take effect")
+                            
+                            // Complete the operation
+                            let successMsg = "Password set successfully! Tag is now password-protected.\n\nIMPORTANT: Remove the tag from the RF field and re-present it for protection to take effect."
+                            session.alertMessage = "Password set successfully! Remove tag and re-present for protection."
+                            self.currentTag = nil
+                            session.invalidate()
+                            print("✅ \(successMsg)")
+                            self.onSetPasswordCompleted?(successMsg, nil)
+                        }
                     }
                 }
             }

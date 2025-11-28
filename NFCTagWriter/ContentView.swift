@@ -67,6 +67,9 @@ struct ContentView: View {
                 TextField("Enter text to write to NFC tag", text: $textToWrite)
                     .textFieldStyle(.roundedBorder)
                     .autocorrectionDisabled()
+                    .autocapitalization(.none)
+                    .submitLabel(.done)
+                    .keyboardType(.default)
             }
             .padding(.horizontal)
             

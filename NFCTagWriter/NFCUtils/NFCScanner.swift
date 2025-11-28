@@ -16,6 +16,14 @@ struct NFCTagInfo {
     var details: String = ""
 }
 
+// Action types for NFC operations
+enum NFCActionType {
+    case read
+    case write
+    case setPassword
+    case readTagInfo
+}
+
 // 1. Define the Delegate and Session Management
 class NFCScanner: NSObject, NFCTagReaderSessionDelegate {
     func tagReaderSessionDidBecomeActive(_ session: NFCTagReaderSession) {
@@ -31,36 +39,42 @@ class NFCScanner: NSObject, NFCTagReaderSessionDelegate {
     // Store strong reference to tag to keep it alive during operations
     private var currentTag: NFCMiFareTag?
     
+    // Current action being performed
+    private var currentAction: NFCActionType = .read
+    
+    // Callbacks for different operations
     var onWriteCompleted: ((String?, Error?) -> Void)?
     var onReadCompleted: ((String, String?, Error?) -> Void)?
     var onSetPasswordCompleted: ((String?, Error?) -> Void)?
     var onTagInfoCompleted: ((NFCTagInfo?, Error?) -> Void)?
+    
+    // Data for operations
     var textToWrite: String = ""
     var textRead: String = ""
 
     func beginWriting() {
-        // Use NFCTagReaderSession to detect specific tag protocols (ISO14443 for MIFARE/NTAG)
+        currentAction = .write
         session = NFCTagReaderSession(pollingOption: .iso14443, delegate: self, queue: nil)
         session?.alertMessage = "Hold your iPhone near the NFC tag to write."
         session?.begin()
     }
     
     func beginReading() {
-        // Use NFCTagReaderSession to detect specific tag protocols (ISO14443 for MIFARE/NTAG)
+        currentAction = .read
         session = NFCTagReaderSession(pollingOption: .iso14443, delegate: self, queue: nil)
         session?.alertMessage = "Hold your iPhone near the NFC tag to read."
         session?.begin()
     }
     
     func beginSettingPassword() {
-        // Use NFCTagReaderSession to detect specific tag protocols (ISO14443 for MIFARE/NTAG)
+        currentAction = .setPassword
         session = NFCTagReaderSession(pollingOption: .iso14443, delegate: self, queue: nil)
         session?.alertMessage = "Hold your iPhone near the NFC tag to set password."
         session?.begin()
     }
     
     func beginReadingTagInfo() {
-        // Use NFCTagReaderSession to detect specific tag protocols (ISO14443 for MIFARE/NTAG)
+        currentAction = .readTagInfo
         session = NFCTagReaderSession(pollingOption: .iso14443, delegate: self, queue: nil)
         session?.alertMessage = "Hold your iPhone near the NFC tag to read information."
         session?.begin()
@@ -86,18 +100,8 @@ class NFCScanner: NSObject, NFCTagReaderSessionDelegate {
             if case let .miFare(miFareTag) = firstTag {
                // Store strong reference to keep tag alive
                self.currentTag = miFareTag
-               
-               // Check which operation to perform
-               if self.onTagInfoCompleted != nil {
-                   // Read tag info operation (no authentication needed for basic info)
-                   self.readTagInfo(miFareTag: miFareTag, session: session)
-               } else if self.onSetPasswordCompleted != nil {
-                   // Set password operation
-                   self.setPassword(miFareTag: miFareTag, session: session)
-               } else {
-                   // Read or write operation
-                   self.authenticateTag(miFareTag: miFareTag, session: session)
-               }
+               // Route to appropriate handler based on action type
+               self.handleTagAction(miFareTag: miFareTag, session: session)
             } else {
                 session.invalidate(errorMessage: "Tag is not a compatible MIFARE type.")
             }
@@ -107,6 +111,23 @@ class NFCScanner: NSObject, NFCTagReaderSessionDelegate {
     func tagReaderSession(_ session: NFCTagReaderSession, didInvalidateWithError error: Error) {
         // Handle session invalidation (e.g., error or success)
         print("Session invalidated: \(error.localizedDescription)")
+    }
+    
+    // Route tag action to appropriate handler based on action type
+    private func handleTagAction(miFareTag: NFCMiFareTag, session: NFCTagReaderSession) {
+        switch currentAction {
+        case .readTagInfo:
+            // Read tag info operation (no authentication needed for basic info)
+            readTagInfo(miFareTag: miFareTag, session: session)
+            
+        case .setPassword:
+            // Set password operation (no authentication needed)
+            setPassword(miFareTag: miFareTag, session: session)
+            
+        case .read, .write:
+            // Read or write operations require authentication
+            authenticateTag(miFareTag: miFareTag, session: session)
+        }
     }
     
     // 4. The `sendMiFareCommand` function
@@ -138,8 +159,7 @@ class NFCScanner: NSObject, NFCTagReaderSessionDelegate {
             if let error = error {
                 self.currentTag = nil // Release tag reference on error
                 session.invalidate(errorMessage: "Authentication Failed: \(error.localizedDescription)")
-                self.onReadCompleted?("", nil, error)
-                self.onWriteCompleted?(nil, error)
+                self.handleAuthenticationError(error: error)
                 return
             }
             
@@ -152,8 +172,7 @@ class NFCScanner: NSObject, NFCTagReaderSessionDelegate {
                 print("Transmission error: \(error.localizedDescription)")
                 self.currentTag = nil // Release tag reference on error
                 session.invalidate(errorMessage: "Authentication Failed: \(error.localizedDescription)")
-                self.onReadCompleted?("", nil, error)
-                self.onWriteCompleted?(nil, error)
+                self.handleAuthenticationError(error: error)
                 return
             }
 
@@ -169,7 +188,9 @@ class NFCScanner: NSObject, NFCTagReaderSessionDelegate {
                 // Ideally, you should also verify these 2 bytes match what you expect
                 // if your system relies on specific PACK values.
                 print("Raw authentication successful! PACK received: \(response as NSData)")
-                // Proceed with protected operations...
+                // Proceed with protected operations based on action type
+                self.performAuthenticatedOperation(miFareTag: miFareTag, session: session)
+                return
             } else if response.count == 1 {
                  // ❌ FAILED (Likely NAK)
                  // Let's check if it's a standard MIFARE NAK
@@ -192,76 +213,122 @@ class NFCScanner: NSObject, NFCTagReaderSessionDelegate {
                  print(errorMsg)
                 self.currentTag = nil // Release tag reference on error
                 session.invalidate(errorMessage: errorMsg)
-                self.onReadCompleted?("", nil, NSError(domain: "NFCScanner", code: -15, userInfo: [NSLocalizedDescriptionKey: errorMsg]))
-                self.onWriteCompleted?(nil, NSError(domain: "NFCScanner", code: -15, userInfo: [NSLocalizedDescriptionKey: errorMsg]))
+                let authError = NSError(domain: "NFCScanner", code: -15, userInfo: [NSLocalizedDescriptionKey: errorMsg])
+                self.handleAuthenticationError(error: authError)
                 return
             } else {
                 // ❌ FAILED (Unknown response format)
                 print("Authentication failed. Unexpected response length: \(response.count)")
                 self.currentTag = nil // Release tag reference on error
                 session.invalidate(errorMessage: "Authentication failed. Unexpected response length: \(response.count)")
-                self.onReadCompleted?("", nil, error)
-                self.onWriteCompleted?(nil, error)
+                self.handleAuthenticationError(error: error)
                 return
             }
             
-            if let onWriteCompleted = onWriteCompleted {
-                print("Attempting to write using native writeNDEF API...")
-                let text = self.textToWrite.isEmpty ? "https://firewalla.com" : self.textToWrite
-                self.writeStringData(miFareTag: miFareTag, session: session, string: text) { [weak self] result in
-                    guard let self = self else { return }
-                    var writeMsg = "Write Successful."
-                    switch result {
-                    case .success:
-                        session.alertMessage = "Success! NDEF Written."
-                        self.currentTag = nil
-                        session.invalidate()
-                        print("Success! NDEF Written via raw commands.")
-                        onWriteCompleted(writeMsg, nil)
-                    case .failure(let err):
-                        writeMsg = "Write failed: \(err.localizedDescription)"
-                        self.currentTag = nil
-                        session.invalidate(errorMessage: writeMsg)
-                        print(writeMsg)
-                        onWriteCompleted(writeMsg, err)
-                    }
-                    print("writeNDEF done with \(writeMsg)")
-                }
-            } else {
-                // 2. READ & PARSE
-                readAndParseNDEF2(tag: miFareTag) { result in
-                    var readMsg = "Read Successful."
-                    switch result {
-                    case .success(let message):
-                        // Success! You have the NFCNDEFMessage object back.
-                        // Parse the first record's payload to extract text
-                        if let firstRecord = message.records.first {
-                            let text = self.parseNDEFTextPayload(firstRecord.payload)
-                            if !text.isEmpty {
-                                readMsg = "Read: \(text)"
-                                self.textRead = text
-                                print(readMsg)
-                            } else {
-                                readMsg = "Read NDEF successfully! Decode failed."
-                                self.textRead = "N/A"
-                                print(readMsg)
-                            }
-                        } else {
-                            readMsg = "Read NDEF successfully! No records found."
-                            self.textRead = "N/A"
-                            print(readMsg)
-                        }
-                        self.currentTag = nil // Release tag reference
-                        session.invalidate()
-                        self.onReadCompleted?(self.textRead, readMsg, nil)
-                    case .failure(let err):
-                        readMsg = "Read failed: \(err.localizedDescription)"
-                        self.currentTag = nil // Release tag reference
-                        session.invalidate(errorMessage: readMsg)
+            // Route to appropriate operation based on action type
+            self.performAuthenticatedOperation(miFareTag: miFareTag, session: session)
+        }
+    }
+    
+    // Handle authenticated operations after successful authentication
+    private func performAuthenticatedOperation(miFareTag: NFCMiFareTag, session: NFCTagReaderSession) {
+        switch currentAction {
+        case .write:
+            performWriteOperation(miFareTag: miFareTag, session: session)
+        case .read:
+            performReadOperation(miFareTag: miFareTag, session: session)
+        default:
+            // Should not reach here for authenticated operations
+            session.invalidate(errorMessage: "Invalid action type for authenticated operation")
+            self.currentTag = nil
+        }
+    }
+    
+    // Handle authentication errors
+    private func handleAuthenticationError(error: Error?) {
+        let authError = error ?? NSError(domain: "NFCScanner", code: -1, userInfo: [NSLocalizedDescriptionKey: "Authentication failed"])
+        switch currentAction {
+        case .read:
+            onReadCompleted?("", nil, authError)
+        case .write:
+            onWriteCompleted?(nil, authError)
+        default:
+            break
+        }
+    }
+    
+    // Perform write operation after authentication
+    private func performWriteOperation(miFareTag: NFCMiFareTag, session: NFCTagReaderSession) {
+        guard let onWriteCompleted = onWriteCompleted else {
+            session.invalidate(errorMessage: "No write callback set")
+            self.currentTag = nil
+            return
+        }
+        
+        print("Attempting to write using native writeNDEF API...")
+        let text = self.textToWrite.isEmpty ? "https://firewalla.com" : self.textToWrite
+        self.writeStringData(miFareTag: miFareTag, session: session, string: text) { [weak self] result in
+            guard let self = self else { return }
+            var writeMsg = "Write Successful."
+            switch result {
+            case .success:
+                session.alertMessage = "Success! NDEF Written."
+                self.currentTag = nil
+                session.invalidate()
+                print("Success! NDEF Written via raw commands.")
+                onWriteCompleted(writeMsg, nil)
+            case .failure(let err):
+                writeMsg = "Write failed: \(err.localizedDescription)"
+                self.currentTag = nil
+                session.invalidate(errorMessage: writeMsg)
+                print(writeMsg)
+                onWriteCompleted(writeMsg, err)
+            }
+            print("writeNDEF done with \(writeMsg)")
+        }
+    }
+    
+    // Perform read operation after authentication
+    private func performReadOperation(miFareTag: NFCMiFareTag, session: NFCTagReaderSession) {
+        guard let onReadCompleted = onReadCompleted else {
+            session.invalidate(errorMessage: "No read callback set")
+            self.currentTag = nil
+            return
+        }
+        
+        // READ & PARSE
+        readAndParseNDEF2(tag: miFareTag) { [weak self] result in
+            guard let self = self else { return }
+            var readMsg = "Read Successful."
+            switch result {
+            case .success(let message):
+                // Success! You have the NFCNDEFMessage object back.
+                // Parse the first record's payload to extract text
+                if let firstRecord = message.records.first {
+                    let text = self.parseNDEFTextPayload(firstRecord.payload)
+                    if !text.isEmpty {
+                        readMsg = "Read: \(text)"
+                        self.textRead = text
                         print(readMsg)
-                        self.onReadCompleted?(self.textRead, readMsg, err)
+                    } else {
+                        readMsg = "Read NDEF successfully! Decode failed."
+                        self.textRead = "N/A"
+                        print(readMsg)
                     }
+                } else {
+                    readMsg = "Read NDEF successfully! No records found."
+                    self.textRead = "N/A"
+                    print(readMsg)
                 }
+                self.currentTag = nil // Release tag reference
+                session.invalidate()
+                onReadCompleted(self.textRead, readMsg, nil)
+            case .failure(let err):
+                readMsg = "Read failed: \(err.localizedDescription)"
+                self.currentTag = nil // Release tag reference
+                session.invalidate(errorMessage: readMsg)
+                print(readMsg)
+                onReadCompleted(self.textRead, readMsg, err)
             }
         }
     }

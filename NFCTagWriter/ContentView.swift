@@ -16,11 +16,12 @@ struct ContentView: View {
     
     @State private var textPassword: String = "5678"
     @State private var textRead: String = ""
-    @State private var textToWrite: String = "https://firewalla.com/194d80ed824b/rule/362"
+    @State private var textToWrite: String = "https://firewalla.com/915565a3-65c7-4a2b-8629-194d80ed824b/rule/362"
     @State private var tagInfo: NFCTagInfo? = nil
     @State private var alertMessage: String = ""
     @State private var showAlert: Bool = false
     @State private var writeOnlyProtection: Bool = true  // Default: Write Protected Only (Read full access)
+    @FocusState private var isTextFieldFocused: Bool
     
     var body: some View {
         ScrollView {
@@ -70,10 +71,11 @@ struct ContentView: View {
                     .font(.headline)
                 TextField("Enter text to write to NFC tag", text: $textToWrite)
                     .textFieldStyle(.roundedBorder)
+                    .focused($isTextFieldFocused)
+                    .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
-                    .autocapitalization(.none)
+                    .keyboardType(.URL)
                     .submitLabel(.done)
-                    .keyboardType(.default)
             }
             .padding(.horizontal)
             
@@ -196,6 +198,7 @@ struct ContentView: View {
         } message: {
             Text(alertMessage)
         }
+        .scrollDismissesKeyboard(.interactively)
     }
     
     private func readNFC() {

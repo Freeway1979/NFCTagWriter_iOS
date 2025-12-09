@@ -51,7 +51,7 @@ public extension DnaCommunicator {
         }
         
         let offsetBytes = Helper.byteArrayLE(from: Int32(offset))[0...2]
-        let lengthBytes = Helper.byteArrayLE(from: Int32(length))
+        let lengthBytes = Helper.byteArrayLE(from: Int32(length))[0...2]  // Fix: Use only 3 bytes for length (little endian)
         
         nxpSwitchedCommand(mode: mode!, command: 0xad, header: [fileNum] + offsetBytes + lengthBytes, data: []) { result, err in
             completion(result.data, self.makeErrorIfNotExpectedStatus(result, error: err))

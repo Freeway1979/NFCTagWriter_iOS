@@ -7,6 +7,14 @@
 import CoreNFC
 import Foundation
 
+
+// NTAG 424 Action Types
+enum NTAG424DNAActionType {
+    case setPassword
+    case writeData
+    case readData
+}
+
 // NTAG 424 DNA Scanner using NfcDnaKit third-party library
 // This is a refactored version using NfcDnaKit instead of manual APDU commands
 class NTAG424DNAScanner: NSObject, NFCTagReaderSessionDelegate {
@@ -18,12 +26,14 @@ class NTAG424DNAScanner: NSObject, NFCTagReaderSessionDelegate {
     private var communicator: DnaCommunicator?
     
     // Current action being performed
-    private var currentAction: NTAG424ActionType = .setPassword
+    private var currentAction: NTAG424DNAActionType = .setPassword
     
     // Callbacks
     var onSetPasswordCompleted: ((String?, Error?) -> Void)?
     var onAuthenticateCompleted: ((Bool, Error?) -> Void)?
     var onTagInfoCompleted: ((NTAG424TagInfo?, Error?) -> Void)?
+    var onReadDataCompleted: ((String?, Error?) -> Void)?
+    var onWriteDataCompleted: ((Bool, Error?) -> Void)?
     
     // Password/Key data (16 bytes for AES-128)
     var password: String = ""
@@ -54,6 +64,21 @@ class NTAG424DNAScanner: NSObject, NFCTagReaderSessionDelegate {
     // Default key (usually all zeros for factory default)
     private let defaultKey: Data = Data(repeating: 0x00, count: 16)
     
+    // Data to read/write
+    var dataToWrite: String = ""
+    
+    private func handleError(error: Error) {
+        // Call appropriate callback based on action
+        switch self.currentAction {
+        case .setPassword:
+            self.onSetPasswordCompleted?(nil, error)
+        case .readData:
+            self.onReadDataCompleted?(nil, error)
+        case .writeData:
+            self.onWriteDataCompleted?(false, error)
+        }
+    }
+    
     // Begin setting password on NTAG 424 tag
     func beginSettingPassword(password: String) {
         self.password = password
@@ -62,6 +87,29 @@ class NTAG424DNAScanner: NSObject, NFCTagReaderSessionDelegate {
         // Use ISO14443 polling which supports ISO 7816 tags
         session = NFCTagReaderSession(pollingOption: [.iso14443], delegate: self, queue: nil)
         session?.alertMessage = "Hold your iPhone near the NTAG 424 tag to set password."
+        session?.begin()
+    }
+    
+    // Begin reading data from NTAG 424 tag
+    func beginReadingData(password: String) {
+        self.password = password
+        currentAction = .readData
+        
+        // Use ISO14443 polling which supports ISO 7816 tags
+        session = NFCTagReaderSession(pollingOption: [.iso14443], delegate: self, queue: nil)
+        session?.alertMessage = "Hold your iPhone near the NTAG 424 tag to read data."
+        session?.begin()
+    }
+    
+    // Begin writing data to NTAG 424 tag
+    func beginWritingData(data: String, password: String) {
+        self.dataToWrite = data
+        self.password = password
+        currentAction = .writeData
+        
+        // Use ISO14443 polling which supports ISO 7816 tags
+        session = NFCTagReaderSession(pollingOption: [.iso14443], delegate: self, queue: nil)
+        session?.alertMessage = "Hold your iPhone near the NTAG 424 tag to write data."
         session?.begin()
     }
     
@@ -125,7 +173,7 @@ class NTAG424DNAScanner: NSObject, NFCTagReaderSessionDelegate {
                     let errorMsg = "Failed to connect to tag: \(error.localizedDescription)"
                     print("❌ \(errorMsg)")
                     session.invalidate(errorMessage: errorMsg)
-                    self.onSetPasswordCompleted?(nil, error)
+                    self.handleError(error: error)
                     return
                 }
                 
@@ -139,7 +187,8 @@ class NTAG424DNAScanner: NSObject, NFCTagReaderSessionDelegate {
                         let errorMsg = "Failed to begin communicator: \(beginError.localizedDescription)"
                         print("❌ \(errorMsg)")
                         session.invalidate(errorMessage: errorMsg)
-                        self.onSetPasswordCompleted?(nil, beginError)
+                        // Call appropriate callback based on action
+                        self.handleError(error: beginError)
                         return
                     }
                     
@@ -149,9 +198,12 @@ class NTAG424DNAScanner: NSObject, NFCTagReaderSessionDelegate {
                     switch self.currentAction {
                     case .setPassword:
                         self.setPassword(communicator: comm, session: session)
-                    case .authenticate:
-                        // Authentication is handled as part of other operations
-                        break
+                    case .readData:
+                        // For readTagInfo action, we'll read NDEF data
+                        self.readData(communicator: comm, session: session)
+                    case .writeData:
+                        // For authenticate action, we'll write NDEF data
+                        self.writeData(communicator: comm, session: session)
                     }
                 }
             }
@@ -164,9 +216,10 @@ class NTAG424DNAScanner: NSObject, NFCTagReaderSessionDelegate {
             print("   Solution: Use NTAG424Scanner which handles MIFARE tags via sendMiFareCommand()")
             session.invalidate(errorMessage: "Tag detected as MIFARE. Use NTAG424Scanner instead.")
             
-            // Call completion with error
+            // Call completion with error based on action
             DispatchQueue.main.async {
-                self.onSetPasswordCompleted?(nil, NSError(domain: "NTAG424DNAScanner", code: -1, userInfo: [NSLocalizedDescriptionKey: errorMsg]))
+                let error = NSError(domain: "NTAG424DNAScanner", code: -1, userInfo: [NSLocalizedDescriptionKey: errorMsg])
+                self.handleError(error: error)
             }
         } else {
             // Unknown tag type
@@ -242,6 +295,269 @@ class NTAG424DNAScanner: NSObject, NFCTagReaderSessionDelegate {
                 self.communicator = nil
                 self.onSetPasswordCompleted?(successMsg, nil)
             }
+        }
+    }
+    
+    // MARK: - Read/Write Data Operations
+    
+    // Read data from NTAG 424 tag NDEF file
+    private func readData(communicator: DnaCommunicator, session: NFCTagReaderSession) {
+        print("=== Reading Data from NTAG 424 Tag (using NfcDnaKit) ===")
+        
+        // Step 1: Authenticate if password is provided
+        if !password.isEmpty {
+            print("\nStep 1: Authenticating with password...")
+            let keyBytes = dataToBytes(passwordData)
+            communicator.authenticateEV2First(keyNum: 0, keyData: keyBytes) { [weak self] success, error in
+                guard let self = self else { return }
+                
+                if let error = error {
+                    let errorMsg = "Authentication failed: \(error.localizedDescription)"
+                    print("❌ \(errorMsg)")
+                    session.invalidate(errorMessage: errorMsg)
+                    self.onReadDataCompleted?(nil, error)
+                    return
+                }
+                
+                if !success {
+                    let errorMsg = "Authentication failed"
+                    print("❌ \(errorMsg)")
+                    session.invalidate(errorMessage: errorMsg)
+                    self.onReadDataCompleted?(nil, NSError(domain: "NTAG424DNAScanner", code: -1, userInfo: [NSLocalizedDescriptionKey: errorMsg]))
+                    return
+                }
+                
+                print("✅ Authenticated successfully")
+                self.performReadData(communicator: communicator, session: session)
+            }
+        } else {
+            // No password, read directly
+            performReadData(communicator: communicator, session: session)
+        }
+    }
+    
+    // Perform the actual read operation
+    private func performReadData(communicator: DnaCommunicator, session: NFCTagReaderSession) {
+        print("\nStep 2: Reading NDEF file...")
+        
+        // Read NDEF file (file number 2, max 256 bytes)
+        communicator.readFileData(fileNum: DnaCommunicator.NDEF_FILE_NUMBER, length: 256, offset: 0) { [weak self] data, error in
+            guard let self = self else { return }
+            
+            if let error = error {
+                let errorMsg = "Failed to read NDEF file: \(error.localizedDescription)"
+                print("❌ \(errorMsg)")
+                session.invalidate(errorMessage: errorMsg)
+                self.onReadDataCompleted?(nil, error)
+                return
+            }
+            
+            print("📥 Read \(data.count) bytes from NDEF file")
+            
+            // Parse NDEF message from the data
+            let text = self.parseNDEFData(bytesToData(data))
+            
+            if !text.isEmpty {
+                print("✅ Read data: \(text)")
+                session.alertMessage = "Data read successfully!"
+                session.invalidate()
+                self.currentTag = nil
+                self.communicator = nil
+                self.onReadDataCompleted?(text, nil)
+            } else {
+                let errorMsg = "No NDEF data found or failed to parse"
+                print("❌ \(errorMsg)")
+                session.invalidate(errorMessage: errorMsg)
+                self.onReadDataCompleted?(nil, NSError(domain: "NTAG424DNAScanner", code: -1, userInfo: [NSLocalizedDescriptionKey: errorMsg]))
+            }
+        }
+    }
+    
+    // Write data to NTAG 424 tag NDEF file
+    private func writeData(communicator: DnaCommunicator, session: NFCTagReaderSession) {
+        print("=== Writing Data to NTAG 424 Tag (using NfcDnaKit) ===")
+        print("Data to write: \(dataToWrite)")
+        
+        // Step 1: Authenticate if password is provided
+        if !password.isEmpty {
+            print("\nStep 1: Authenticating with password...")
+            let keyBytes = dataToBytes(passwordData)
+            communicator.authenticateEV2First(keyNum: 0, keyData: keyBytes) { [weak self] success, error in
+                guard let self = self else { return }
+                
+                if let error = error {
+                    let errorMsg = "Authentication failed: \(error.localizedDescription)"
+                    print("❌ \(errorMsg)")
+                    session.invalidate(errorMessage: errorMsg)
+                    self.onWriteDataCompleted?(false, error)
+                    return
+                }
+                
+                if !success {
+                    let errorMsg = "Authentication failed"
+                    print("❌ \(errorMsg)")
+                    session.invalidate(errorMessage: errorMsg)
+                    self.onWriteDataCompleted?(false, NSError(domain: "NTAG424DNAScanner", code: -1, userInfo: [NSLocalizedDescriptionKey: errorMsg]))
+                    return
+                }
+                
+                print("✅ Authenticated successfully")
+                self.performWriteData(communicator: communicator, session: session)
+            }
+        } else {
+            // No password, write directly
+            performWriteData(communicator: communicator, session: session)
+        }
+    }
+    
+    // Perform the actual write operation
+    private func performWriteData(communicator: DnaCommunicator, session: NFCTagReaderSession) {
+        print("\nStep 2: Creating NDEF message...")
+        
+        // Create NDEF message from text/URL
+        guard let ndefData = createNDEFMessage(from: dataToWrite) else {
+            let errorMsg = "Failed to create NDEF message from: \(dataToWrite)"
+            print("❌ \(errorMsg)")
+            session.invalidate(errorMessage: errorMsg)
+            onWriteDataCompleted?(false, NSError(domain: "NTAG424DNAScanner", code: -1, userInfo: [NSLocalizedDescriptionKey: errorMsg]))
+            return
+        }
+        
+        let ndefBytes = dataToBytes(ndefData)
+        print("📤 NDEF message size: \(ndefBytes.count) bytes")
+        
+        // Write to NDEF file (file number 2)
+        print("\nStep 3: Writing to NDEF file...")
+        communicator.writeFileData(fileNum: DnaCommunicator.NDEF_FILE_NUMBER, data: ndefBytes, offset: 0) { [weak self] error in
+            guard let self = self else { return }
+            
+            if let error = error {
+                let errorMsg = "Failed to write NDEF file: \(error.localizedDescription)"
+                print("❌ \(errorMsg)")
+                session.invalidate(errorMessage: errorMsg)
+                self.onWriteDataCompleted?(false, error)
+                return
+            }
+            
+            print("✅ Data written successfully!")
+            session.alertMessage = "Data written successfully!"
+            session.invalidate()
+            self.currentTag = nil
+            self.communicator = nil
+            self.onWriteDataCompleted?(true, nil)
+        }
+    }
+    
+    // MARK: - NDEF Helpers
+    
+    // Create NDEF message from text/URL string
+    private func createNDEFMessage(from text: String) -> Data? {
+        // Try to create URI payload first (for URLs)
+        if let uriPayload = NFCNDEFPayload.wellKnownTypeURIPayload(string: text) {
+            let message = NFCNDEFMessage(records: [uriPayload])
+            return message.asData()
+        }
+        
+        // Fallback to text payload
+        if let textPayload = NFCNDEFPayload.wellKnownTypeTextPayload(string: text, locale: Locale(identifier: "en")) {
+            let message = NFCNDEFMessage(records: [textPayload])
+            return message.asData()
+        }
+        
+        return nil
+    }
+    
+    // Parse NDEF data and extract text/URL
+    private func parseNDEFData(_ data: Data) -> String {
+        guard data.count > 0 else { return "" }
+        
+        // Remove padding (0x00 bytes at the end)
+        var trimmedData = data
+        while trimmedData.last == 0x00 {
+            trimmedData = trimmedData.dropLast()
+        }
+        
+        guard trimmedData.count > 0 else { return "" }
+        
+        // Try to parse as NDEF message
+        if let message = try? NFCNDEFMessage(data: trimmedData) {
+            for record in message.records {
+                // Check if it's a URI record
+                if record.typeNameFormat == .nfcWellKnown, record.type == Data([0x55]) { // "U" = URI
+                    let uri = parseNDEFURIPayload(record.payload)
+                    if !uri.isEmpty {
+                        return uri
+                    }
+                }
+                
+                // Check if it's a text record
+                if record.typeNameFormat == .nfcWellKnown, record.type == Data([0x54]) { // "T" = Text
+                    let text = parseNDEFTextPayload(record.payload)
+                    if !text.isEmpty {
+                        return text
+                    }
+                }
+            }
+        }
+        
+        // Fallback: try to decode as UTF-8 string
+        if let text = String(data: trimmedData, encoding: .utf8), !text.isEmpty {
+            return text.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        
+        return ""
+    }
+    
+    // Parse NDEF URI payload
+    private func parseNDEFURIPayload(_ payload: Data) -> String {
+        guard payload.count > 0 else { return "" }
+        
+        let prefixCode = payload[0]
+        let uriSuffix = payload.subdata(in: 1..<payload.count)
+        
+        let uriPrefixes: [String] = [
+            "",                    // 0x00: No prefix
+            "http://www.",         // 0x01
+            "https://www.",        // 0x02
+            "http://",             // 0x03
+            "https://",            // 0x04
+            "tel:",                // 0x05
+            "mailto:",             // 0x06
+        ]
+        
+        let prefix: String
+        if Int(prefixCode) < uriPrefixes.count {
+            prefix = uriPrefixes[Int(prefixCode)]
+        } else {
+            prefix = ""
+        }
+        
+        if let suffix = String(data: uriSuffix, encoding: .utf8) {
+            return prefix + suffix
+        }
+        
+        return ""
+    }
+    
+    // Parse NDEF text payload
+    private func parseNDEFTextPayload(_ payload: Data) -> String {
+        guard payload.count > 0 else { return "" }
+        
+        let statusByte = payload[0]
+        let langCodeLength = Int(statusByte & 0x3F)
+        
+        guard payload.count > langCodeLength else { return "" }
+        
+        let textStartIndex = 1 + langCodeLength
+        guard payload.count > textStartIndex else { return "" }
+        
+        let textData = payload.subdata(in: textStartIndex..<payload.count)
+        let isUTF16 = (statusByte & 0x80) != 0
+        
+        if isUTF16 {
+            return String(data: textData, encoding: .utf16) ?? ""
+        } else {
+            return String(data: textData, encoding: .utf8) ?? ""
         }
     }
     

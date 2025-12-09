@@ -217,16 +217,52 @@ struct NTAG424View: View {
         nfcError = ""
         textRead = ""
         
-        // TODO: Implement read data functionality in NTAG424Scanner
-        nfcError = "Read data functionality not yet implemented."
+        scanner.onReadDataCompleted = { text, error in
+            DispatchQueue.main.async {
+                if let error = error {
+                    nfcError = "Read Error: \(error.localizedDescription)"
+                    nfcMessage = ""
+                    textRead = ""
+                } else if let text = text {
+                    textRead = text
+                    nfcMessage = "Data read successfully!"
+                    nfcError = ""
+                } else {
+                    nfcError = "No data read from tag"
+                    nfcMessage = ""
+                    textRead = ""
+                }
+            }
+        }
+        
+        scanner.beginReadingData(password: password)
     }
     
     private func writeData() {
         nfcMessage = ""
         nfcError = ""
         
-        // TODO: Implement write data functionality in NTAG424Scanner
-        nfcError = "Write data functionality not yet implemented."
+        guard !textToWrite.isEmpty else {
+            nfcError = "Please enter text to write"
+            return
+        }
+        
+        scanner.onWriteDataCompleted = { success, error in
+            DispatchQueue.main.async {
+                if let error = error {
+                    nfcError = "Write Error: \(error.localizedDescription)"
+                    nfcMessage = ""
+                } else if success {
+                    nfcMessage = "Data written successfully!"
+                    nfcError = ""
+                } else {
+                    nfcError = "Write failed"
+                    nfcMessage = ""
+                }
+            }
+        }
+        
+        scanner.beginWritingData(data: textToWrite, password: password)
     }
 }
 

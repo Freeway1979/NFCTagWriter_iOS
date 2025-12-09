@@ -34,6 +34,7 @@ class NTAG424DNAScanner: NSObject, NFCTagReaderSessionDelegate {
     var onTagInfoCompleted: ((NTAG424TagInfo?, Error?) -> Void)?
     var onReadDataCompleted: ((String?, Error?) -> Void)?
     var onWriteDataCompleted: ((Bool, Error?) -> Void)?
+    var onUIDDetected: ((String) -> Void)?  // Callback for when UID is detected
     
     // Password/Key data (16 bytes for AES-128)
     var password: String = ""
@@ -158,6 +159,13 @@ class NTAG424DNAScanner: NSObject, NFCTagReaderSessionDelegate {
             print("NTAG424DNAScanner: Detected ISO 7816 tag - using NfcDnaKit")
             self.currentTag = tag
             
+            // Extract and notify UID
+            let uid = tag.identifier.map { String(format: "%02X", $0) }.joined(separator: ":")
+            print("📋 Tag UID: \(uid)")
+            DispatchQueue.main.async {
+                self.onUIDDetected?(uid)
+            }
+            
             // Initialize DnaCommunicator
             let comm = DnaCommunicator()
             comm.tag = tag
@@ -208,6 +216,12 @@ class NTAG424DNAScanner: NSObject, NFCTagReaderSessionDelegate {
                 }
             }
         } else if case let .miFare(miFareTag) = firstTag {
+            // Extract and notify UID
+            let uid = miFareTag.identifier.map { String(format: "%02X", $0) }.joined(separator: ":")
+            print("📋 Tag UID: \(uid)")
+            DispatchQueue.main.async {
+                self.onUIDDetected?(uid)
+            }
             // Detected as MIFARE - NfcDnaKit cannot be used
             // Inform user that they should use NTAG424Scanner instead, or we could fall back
             let errorMsg = "NTAG 424 DNA detected as MIFARE tag.\n\nNfcDnaKit requires ISO 7816 tags.\n\nPlease use NTAG424Scanner instead, which supports both ISO 7816 and MIFARE detection.\n\nNote: NTAG 424 DNA tags support AES-128 encryption even when detected as MIFARE."

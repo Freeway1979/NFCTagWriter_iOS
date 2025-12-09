@@ -14,6 +14,7 @@ struct NTAG424View: View {
     @State private var scanner = NTAG424DNAScanner()
     @State private var nfcMessage: String = ""
     @State private var nfcError: String = ""
+    @State private var tagUID: String = ""  // Store the last detected tag UID
     
     @State private var password: String = "915565AB915565AB"  // 16 characters for 16-byte key
     @State private var textToWrite: String = "https://mesh.firewalla.net/nfc?gid=915565a3-65c7-4a2b-8629-194d80ed824b&rule=249&chksum=34fd"
@@ -37,6 +38,22 @@ struct NTAG424View: View {
                     Text("Advanced NFC Tag with AES-128 Encryption")
                         .font(.caption)
                         .foregroundColor(.secondary)
+                    
+                    // Tag UID Display
+                    if !tagUID.isEmpty {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Tag UID:")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                            Text(tagUID)
+                                .font(.system(.body, design: .monospaced))
+                                .padding(8)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .background(Color.blue.opacity(0.1))
+                                .cornerRadius(8)
+                        }
+                        .padding(.horizontal)
+                    }
                     
                     Divider()
                     
@@ -185,9 +202,20 @@ struct NTAG424View: View {
     
     // MARK: - Actions
     
+    private func setupScannerCallbacks() {
+        // Set up UID detection callback
+        scanner.onUIDDetected = { uid in
+            DispatchQueue.main.async {
+                self.tagUID = uid
+            }
+        }
+    }
+    
     private func setPassword() {
         nfcMessage = ""
         nfcError = ""
+        
+        setupScannerCallbacks()
         
         guard password.count == 16 else {
             nfcError = "Password must be exactly 16 characters"
@@ -217,6 +245,8 @@ struct NTAG424View: View {
         nfcError = ""
         textRead = ""
         
+        setupScannerCallbacks()
+        
         scanner.onReadDataCompleted = { text, error in
             DispatchQueue.main.async {
                 if let error = error {
@@ -241,6 +271,8 @@ struct NTAG424View: View {
     private func writeData() {
         nfcMessage = ""
         nfcError = ""
+        
+        setupScannerCallbacks()
         
         guard !textToWrite.isEmpty else {
             nfcError = "Please enter text to write"

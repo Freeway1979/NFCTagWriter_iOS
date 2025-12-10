@@ -100,19 +100,77 @@ struct ClipHelper {
         }
     }
 
-    static func genCheckSum(gid: String, rid: String, key: String = ClipHelper.AES_KEY) -> String {
-        let checksum = encrypt(data: "\(gid)\(rid)", key: key)
+    static func genCheckSum(gid: String, rid: String, key: String = ClipHelper.AES_KEY,
+                            withAESGCM: Bool = false) -> String {
+        let checksum = encrypt(data: "\(gid):\(rid)", key: key, withAESGCM: withAESGCM)
         // When key is stored safely, we can just use md5 as checksum
         // let checksum = "\(gid)\(rid)\(key)".md5()
         print("genCheckSum \(gid) \(rid) \(checksum)")
-        return String(checksum.prefix(10))
+        return checksum
     }
 
+    // checksum: full checksum
     static func verifyCheckSum(checksum: String, gid: String, rid: String,
-                               key: String = ClipHelper.AES_KEY ) -> Bool {
-        let expectedChecksum = genCheckSum(gid: gid, rid: rid, key: key)
-        print("verifyCheckSum expectedChecksum \(expectedChecksum) checksum:\(checksum)")
-        return checksum == String(expectedChecksum.prefix(10))
+                               key: String = ClipHelper.AES_KEY,
+                               withAESGCM: Bool = false) -> Bool {
+        if withAESGCM {
+            let data = decrypt(data: checksum, key: key, withAESGCM: true)
+            if !data.isEmpty {
+                let items = data.split(separator: ":")
+                if let gidData = items.first,
+                   let ridData = items.last {
+                    print("verifyCheckSum decrpyted gid: \(gid) vs \(gidData) rid \(rid) vs \(ridData)")
+                    return gid == gidData && rid == ridData
+                }
+            }
+            return false
+        } else {
+            let expectedChecksum = genCheckSum(gid: gid, rid: rid, key: key, withAESGCM: withAESGCM)
+            print("verifyCheckSum expectedChecksum \(expectedChecksum) checksum:\(checksum)")
+            return String(checksum.prefix(10)) == String(expectedChecksum.prefix(10))
+        }
+    }
+    
+    // MARK: - UserDefaults Checksum Storage
+    
+    /// Save checksum to UserDefaults using first 10 characters as key
+    /// - Parameter checksum: Full checksum string
+    static func saveChecksum(checksum: String) {
+        guard checksum.count >= 10 else {
+            print("⚠️ Checksum too short to save (need at least 10 characters)")
+            return
+        }
+        let key = String(checksum.prefix(10))
+        UserDefaults.standard.set(checksum, forKey: "chksum_\(key)")
+        print("💾 Saved checksum with key: chksum_\(key)")
+    }
+    
+    /// Read checksum from UserDefaults using first 10 characters as key
+    /// - Parameter checksumPrefix: First 10 characters of the checksum
+    /// - Returns: Full checksum if found, nil otherwise
+    static func readChecksum(checksumPrefix: String) -> String? {
+        guard checksumPrefix.count >= 10 else {
+            print("⚠️ Checksum prefix too short (need at least 10 characters)")
+            return nil
+        }
+        let key = String(checksumPrefix.prefix(10))
+        let checksum = UserDefaults.standard.string(forKey: "chksum_\(key)")
+        if let checksum = checksum {
+            print("📖 Read checksum with key: chksum_\(key)")
+        } else {
+            print("⚠️ No checksum found for key: chksum_\(key)")
+        }
+        return checksum
+    }
+    
+    /// Read checksum from UserDefaults using full checksum (extracts prefix automatically)
+    /// - Parameter checksum: Full checksum string
+    /// - Returns: Full checksum if found, nil otherwise
+    static func readChecksumFromFull(checksum: String) -> String? {
+        guard checksum.count >= 10 else {
+            return nil
+        }
+        return readChecksum(checksumPrefix: checksum)
     }
 }
 

@@ -291,12 +291,18 @@ struct NTAG424View: View {
                        let ruleItem = components.queryItems?.first(where: { $0.name == "rule" }),
                        let rid = ruleItem.value,
                        let checkSumItem = components.queryItems?.first(where: { $0.name == "chksum" }),
-                           let chksum = checkSumItem.value {
-                        let validated = ClipHelper.verifyCheckSum(checksum: chksum, gid: gid, rid: rid)
-                        if validated {
-                            nfcMessage = "Data read success and chksum validated"
+                           let chksumPrefix = checkSumItem.value {
+                        // Read full checksum from UserDefaults using the prefix as key
+                        if let fullChecksum = ClipHelper.readChecksum(checksumPrefix: chksumPrefix) {
+                            let validated = ClipHelper.verifyCheckSum(checksum: fullChecksum, gid: gid, rid: rid,
+                                                                      withAESGCM: false)
+                            if validated {
+                                nfcMessage = "Data read success and chksum validated"
+                            } else {
+                                nfcMessage = "Data read success and chksum NOT validated"
+                            }
                         } else {
-                            nfcMessage = "Data read success and chksum NOT validated"
+                            nfcMessage = "Data read success but chksum not found in storage"
                         }
                         print(nfcMessage)
                         nfcError = ""
@@ -342,17 +348,21 @@ struct NTAG424View: View {
            let gid = gidItem.value,
            let ruleItem = components.queryItems?.first(where: { $0.name == "rule" }),
            let rid = ruleItem.value {
-            let checksum = ClipHelper.genCheckSum(gid: gid, rid: rid)
+            let checksum = ClipHelper.genCheckSum(gid: gid, rid: rid, withAESGCM: false)
             if checksum.isEmpty {
                 nfcError = "Failed to generate checksum"
                 return
             }
             
+            // Save checksum to UserDefaults using first 10 characters as key
+            ClipHelper.saveChecksum(checksum: checksum)
+            
             // Remove any existing chksum parameter
             components.queryItems = components.queryItems?.filter { $0.name != "chksum" }
             
-            // Add the new chksum parameter
-            let chksumItem = URLQueryItem(name: "chksum", value: checksum)
+            // Add the new chksum parameter (use only first 10 characters as the stored value)
+            let checksumPrefix = String(checksum.prefix(10))
+            let chksumItem = URLQueryItem(name: "chksum", value: checksumPrefix)
             if components.queryItems == nil {
                 components.queryItems = []
             }

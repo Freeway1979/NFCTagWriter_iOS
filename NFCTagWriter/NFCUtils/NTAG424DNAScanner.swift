@@ -721,7 +721,7 @@ class NTAG424DNAScanner: NSObject, NFCTagReaderSessionDelegate {
              print("\nStep 2: Reading CC file settings...")
              communicator.getFileSettings(fileNum: DnaCommunicator.CC_FILE_NUMBER) { [weak self] ccSettings, ccError in
                  guard let self = self else { return }
-                 
+                 print("CC file settings: readPermission \(String(describing: ccSettings?.readPermission))")
                  if let ccError = ccError {
                      let errorMsg = "Failed to read CC file settings: \(ccError.localizedDescription)"
                      print("❌ \(errorMsg)")
@@ -770,126 +770,39 @@ class NTAG424DNAScanner: NSObject, NFCTagReaderSessionDelegate {
          }
      }
      
-     private func handleCCFileConfigResult(_ result: NxpCommandResult, error: Error?, commandData: [UInt8], completion: @escaping (Bool) -> Void) {
-         if let error = error {
-             print("❌ Failed to configure CC file: \(error.localizedDescription)")
-             completion(false)
-             return
-         }
-         
-         if result.statusMajor == 0x91 && result.statusMinor == 0x00 {
-             print("✅ CC File (0x01) configured successfully!")
-             print("   • Read Access: ALL (0xE) ✅")
-             print("   • Communication Mode: PLAIN ✅")
-             completion(true)
-         } else {
-             // Error status word received
-             let errorMsg = "CC file configuration failed: 0x\(String(format: "%02X", result.statusMajor))\(String(format: "%02X", result.statusMinor))"
-             print("❌ \(errorMsg)")
-             completion(false)
-         }
-     }
-     
-     // NOTE: header+data: MAC, data:encrypted for ChangeFileSettings
-     // Configure CC File (0x01) for iOS background detection (internal helper)
+     // Write CC File (0x01) content directly (no permission configuration)
      private func configureCCFile(communicator: DnaCommunicator, session: NFCTagReaderSession, ccSettings: FileSettings, completion: @escaping (Bool) -> Void) {
          print("\n" + String(repeating: "=", count: 60))
-         print("🔧 Configuring CC File (0x01) for iOS Background Detection...")
+         print("📝 Writing CC File (0x01) Content...")
          print(String(repeating: "=", count: 60))
          
-         print("   Current CC File Read Access: \(ccSettings.readPermission.rawValue) (\(ccSettings.readPermission.displayValue()))")
-         print("   Current CC File Communication Mode: \(ccSettings.communicationMode)")
-         print("   Current CC File Size: \(ccSettings.fileSize ?? 32) bytes")
-         print("   Current Change Access: \(ccSettings.changePermission.rawValue) (\(ccSettings.changePermission.displayValue()))")
+         // CC file content (32 bytes) - Type 4 Tag specification
+         // 001720010000FF0406E104010000000506E10500808283000000000000000000
+         let ccFileContent: [UInt8] = [
+            0x00, 0x17,  // CCLEN (23 bytes)
+            0x20,        // Mapping Version (2.0)
+            0x01, 0x00,  // MLe (256 bytes)
+            0x00, 0xFF,  // MLc (255 bytes)
+            0x04, 0x06, 0xE1, 0x04, 0x01, 0x00, 0x00, 0x00,  // NDEF-File Control TLV
+            0x05, 0x06, 0xE1, 0x05, 0x00, 0x80, 0x82, 0x83,  // Data File Control TLV
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00  // Padding (9 bytes)
+         ]
          
-         // CC file configuration for iOS background detection:
-         // - Read Access: ALL (0xE) - CRITICAL
-         // - Write Access: Can be protected (0x0 = Key 0)
-         // - R/W Access: Can be protected
-         // - Change Access: Should allow changes (ALL or KEY_0)
-         // - Communication Mode: PLAIN (0x00) - CRITICAL
-         // - SDM: Typically disabled for CC file
-         //
-         // IMPORTANT: CC file ChangeFileSettings command structure is different from NDEF file!
-         // CC file structure: [FileNo] [FileOption] [AccessRights(2 bytes)]
-         // NO FileSize bytes for CC file!
-         let fileNo: UInt8 = DnaCommunicator.CC_FILE_NUMBER  // 0x01
-         let fileOption: UInt8 = 0x00  // SDM disabled (bit 6 = 0), PLAIN mode (bits 1-0 = 0x00)
-         // Access Rights: Read=0xE (Free), Write=0x0 (Key 0), R/W=0x0 (Key 0), Change=0xE (Free)
-         let accessRightsByte1: UInt8 = (0xE << 4) | 0x0  // Read: 0xE (Free/ALL), Write: 0x0 (Key 0) = 0xE0
-         let accessRightsByte2: UInt8 = (0x0 << 4) | 0xE  // R/W: 0x0 (Key 0), Change: 0xE (Free/ALL) = 0x0E
+         print("   CC File Content: \(ccFileContent.map { String(format: "%02X", $0) }.joined(separator: " "))")
+         print("   Total size: \(ccFileContent.count) bytes")
          
-         // Build command data for CC file
-         // According to NTAG 424 DNA datasheet, ChangeFileSettings command structure must match GetFileSettings response
-         // GetFileSettings response structure (from FileSettings parsing):
-         //   [FileType] [FileOption] [AccessRights(2)] [FileSize(3)] [SDM params if SDM enabled]
-         // For CC file:
-         //   - FileType is NOT included (it's read-only, comes from GetFileSettings response)
-         //   - FileSize is NOT included for CC file (it's fixed at 32 bytes)
-         //   - SDM params are NOT included (CC file has SDM disabled)
-         // So for CC file ChangeFileSettings: [FileOption] [AccessRights(2)] = 3 bytes
-         // FileNo goes in header (matching getFileSettings pattern: header=[fileNum])
-         var commandData: [UInt8] = []
-         commandData.append(fileOption)        // 1 byte - File option (0x00 = PLAIN, no SDM)
-         commandData.append(accessRightsByte1) // 1 byte - Access rights byte 1 (0xE0)
-         commandData.append(accessRightsByte2) // 1 byte - Access rights byte 2 (0x0E)
-         // Total: 3 bytes (FileOption + AccessRights)
-         // FileNo: In header (1 byte)
-         // Total payload: 4 bytes (1 in header + 3 in data)
-         // NO FileType byte (read-only, not part of ChangeFileSettings)
-         // NO FileSize bytes for CC file!
-         // NO SDM parameters for CC file!
-         
-         print("\n   Target Configuration:")
-         print("   • Read Access: ALL (0xE) - Critical for iOS Background ✅")
-         print("   • Write Access: Key 0 (0x0)")
-         print("   • R/W Access: Key 0 (0x0)")
-         print("   • Change Access: ALL (0xE)")
-         print("   • Communication Mode: PLAIN ✅")
-         print("   • SDM: Disabled")
-         print("   Command structure: header=[\(String(format: "%02X", fileNo))], data=\(commandData.count) bytes")
-         print("   Header: \(String(format: "%02X", fileNo)) (FileNo)")
-         print("   Data: \(commandData.map { String(format: "%02X", $0) }.joined(separator: " "))")
-         print("   Expected: Header=01, Data=00 E0 0E (FileOption=0x00, AccessRights=0xE0 0x0E)")
-         print("   Pattern: FileNo in header, FileOption+AccessRights in data (matching getFileSettings pattern)")
-         print("   Note: Data is sent in PLAIN (not encrypted) - nxpMacCommand adds MAC for integrity")
-         
-         // Re-authenticate before changing CC file settings
-         // Use Key 0 for authentication
-         print("\n   Re-authenticating with Key 0...")
-         let keyBytes = self.dataToBytes(self.passwordData)
-         communicator.authenticateEV2First(keyNum: 0, keyData: keyBytes) { [weak self] authSuccess, authError in
+         // Write CC file content directly (no permission configuration)
+         communicator.writeFileData(fileNum: DnaCommunicator.CC_FILE_NUMBER, data: ccFileContent, mode: .PLAIN, offset: 0) { [weak self] writeError in
              guard let self = self else { return }
              
-             if let authError = authError {
-                 print("❌ Re-authentication failed: \(authError.localizedDescription)")
+             if let writeError = writeError {
+                 print("❌ Failed to write CC file content: \(writeError.localizedDescription)")
                  completion(false)
                  return
              }
              
-             if !authSuccess {
-                 print("❌ Re-authentication failed")
-                 completion(false)
-                 return
-             }
-             
-             print("   ✅ Authenticated successfully")
-             print("   Sending ChangeFileSettings command (0x5F) for CC file...")
-             print("   Command structure: header=[\(String(format: "%02X", fileNo))], data=\(commandData.count) bytes")
-             print("   Header: \(String(format: "%02X", fileNo))")
-             print("   Data (plain): \(commandData.map { String(format: "%02X", $0) }.joined(separator: " "))")
-             print("   Note: ChangeFileSettings is a security command - requires MAC protection when authenticated")
-             print("   Note: Data is sent in PLAIN - nxpMacCommand adds MAC automatically for integrity")
-             print("   Note: FileNo in header, FileOption+AccessRights in data (NO FileSize, NO SDM params)")
-             // IMPORTANT: ChangeFileSettings is a security command that modifies file settings
-             // It requires MAC protection when authenticated, regardless of the file's communication mode
-             // The file's communication mode (PLAIN/MAC/FULL) only applies to read/write operations, not to ChangeFileSettings
-             // 
-             // nxpEncryptedCommand sends data in PLAIN and adds MAC for integrity, data encrypted
-             communicator.nxpEncryptedCommand(command: 0x5F, header: [fileNo], data: commandData) { [weak self] result, error in
-                 guard let self = self else { return }
-                 self.handleCCFileConfigResult(result, error: error, commandData: commandData, completion: completion)
-             }
+             print("✅ CC file content written successfully!")
+             completion(true)
          }
      }
      

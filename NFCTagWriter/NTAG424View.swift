@@ -103,7 +103,7 @@ struct NTAG424View: View {
                     }) {
                         HStack {
                             Image(systemName: "iphone.radiowaves.left.and.right")
-                            Text("Configure CC File (iOS Background)")
+                            Text("Configure CC File")
                         }
                         .font(.headline)
                         .foregroundColor(.white)

@@ -499,193 +499,9 @@ class NTAG424DNAScanner: NSObject, NFCTagReaderSessionDelegate {
     
     // Perform the actual file access configuration
     private func performConfigureFileAccess(communicator: DnaCommunicator, session: NFCTagReaderSession) {
-        print("\nStep 2: Diagnosing iOS Background Detection Requirements...")
-        print(String(repeating: "=", count: 60))
-        
-        // CRITICAL: CC file (file 0x01) must be readable without authentication for iOS background detection
-        // iOS reads the CC file first to determine if the tag is NDEF-formatted
-        print("\n📋 Checking CC File (0x01) - CRITICAL for iOS Background Detection...")
-        communicator.getFileSettings(fileNum: DnaCommunicator.CC_FILE_NUMBER) { [weak self] ccSettings, ccError in
-            guard let self = self else { return }
-            
-            var ccFileReadable = false
-            var ccFileMode = "Unknown"
-            
-            if let ccError = ccError {
-                print("   ❌ ERROR: Could not read CC file settings: \(ccError.localizedDescription)")
-                print("   ⚠️ This will PREVENT iOS background NFC detection!")
-            } else if let ccSettings = ccSettings {
-                ccFileReadable = (ccSettings.readPermission == .ALL)
-                ccFileMode = ccSettings.communicationMode == .PLAIN ? "PLAIN" : "\(ccSettings.communicationMode)"
-                
-                print("   CC File Read Access: \(ccSettings.readPermission.rawValue) (\(ccSettings.readPermission.displayValue()))")
-                print("   CC File Communication Mode: \(ccFileMode)")
-                
-                if !ccFileReadable {
-                    print("   ❌ CRITICAL: CC file Read Access is NOT Free/ALL!")
-                    print("   ❌ This WILL PREVENT iOS background NFC detection!")
-                    print("   💡 SOLUTION: CC file must have Read Access = ALL (0xE) for iOS background detection")
-                } else if ccSettings.communicationMode != .PLAIN {
-                    print("   ⚠️ WARNING: CC file Communication Mode is NOT PLAIN!")
-                    print("   ⚠️ This may prevent iOS background NFC detection!")
-                } else {
-                    print("   ✅ CC file Read Access is correct (Free/ALL)")
-                    print("   ✅ CC file Communication Mode is PLAIN")
-                }
-            }
-            
-            print("\n📋 Checking NDEF File (0x02)...")
-            
-            // Now read NDEF file settings and check if it has data
-            communicator.getFileSettings(fileNum: DnaCommunicator.NDEF_FILE_NUMBER) { [weak self] settings, error in
-                guard let self = self else { return }
-                
-                if let error = error {
-                    let errorMsg = "Failed to read current file settings: \(error.localizedDescription)"
-                    print("❌ \(errorMsg)")
-                    session.invalidate(errorMessage: errorMsg)
-                    self.onConfigureFileAccessCompleted?(nil, error)
-                    return
-                }
-                
-                guard let currentSettings = settings else {
-                    let errorMsg = "Failed to get file settings"
-                    print("❌ \(errorMsg)")
-                    session.invalidate(errorMessage: errorMsg)
-                    self.onConfigureFileAccessCompleted?(nil, NSError(domain: "NTAG424DNAScanner", code: -1, userInfo: [NSLocalizedDescriptionKey: errorMsg]))
-                    return
-                }
-                
-                let ndefReadable = (currentSettings.readPermission == .ALL)
-                let ndefMode = currentSettings.communicationMode == .PLAIN ? "PLAIN" : "\(currentSettings.communicationMode)"
-                
-                print("   NDEF File Read Access: \(currentSettings.readPermission.rawValue) (\(currentSettings.readPermission.displayValue()))")
-                print("   NDEF File Communication Mode: \(ndefMode)")
-                print("   NDEF File Size: \(currentSettings.fileSize ?? 256) bytes")
-                print("   SDM Enabled: \(currentSettings.sdmEnabled)")
-                
-                if !ndefReadable {
-                    print("   ❌ CRITICAL: NDEF file Read Access is NOT Free/ALL!")
-                    print("   ❌ This WILL PREVENT iOS background NFC detection!")
-                } else if currentSettings.communicationMode != .PLAIN {
-                    print("   ⚠️ WARNING: NDEF file Communication Mode is NOT PLAIN!")
-                    print("   ⚠️ This may prevent iOS background NFC detection!")
-                } else {
-                    print("   ✅ NDEF file Read Access is correct (Free/ALL)")
-                    print("   ✅ NDEF file Communication Mode is PLAIN")
-                }
-                
-                // Check if NDEF file has data
-                print("\n📋 Checking if NDEF file contains data...")
-                communicator.readFileData(fileNum: DnaCommunicator.NDEF_FILE_NUMBER, length: 256, offset: 0) { [weak self] ndefData, readError in
-                    guard let self = self else { return }
-                    
-                    var hasNdefData = false
-                    if let readError = readError {
-                        print("   ⚠️ Could not read NDEF file data: \(readError.localizedDescription)")
-                    } else {
-                        // Check if data contains valid NDEF (not all zeros or empty)
-                        let nonZeroBytes = ndefData.filter { $0 != 0x00 && $0 != 0xFE }
-                        hasNdefData = nonZeroBytes.count > 3 // At least some NDEF structure
-                        
-                        if hasNdefData {
-                            print("   ✅ NDEF file contains data (\(ndefData.count) bytes)")
-                        } else {
-                            print("   ⚠️ WARNING: NDEF file appears to be empty or contains only padding!")
-                            print("   ⚠️ iOS may not detect the tag in background if NDEF file is empty!")
-                            print("   💡 SOLUTION: Write valid NDEF data to the NDEF file")
-                        }
-                    }
-                    
-                    // Summary
-                    let separator = String(repeating: "=", count: 60)
-                    print("\n" + separator)
-                    print("📱 iOS Background Detection Diagnosis Summary:")
-                    print(separator)
-                    
-                    var allRequirementsMet = true
-                    
-                    if !ccFileReadable {
-                        print("❌ CC File (0x01) Read Access: NOT Free/ALL - BLOCKS iOS Background Detection")
-                        allRequirementsMet = false
-                    } else {
-                        print("✅ CC File (0x01) Read Access: Free/ALL")
-                    }
-                    
-                    if !ndefReadable {
-                        print("❌ NDEF File (0x02) Read Access: NOT Free/ALL - BLOCKS iOS Background Detection")
-                        allRequirementsMet = false
-                    } else {
-                        print("✅ NDEF File (0x02) Read Access: Free/ALL")
-                    }
-                    
-                    if ccFileMode != "PLAIN" {
-                        print("⚠️ CC File (0x01) Communication Mode: \(ccFileMode) (should be PLAIN)")
-                        allRequirementsMet = false
-                    } else {
-                        print("✅ CC File (0x01) Communication Mode: PLAIN")
-                    }
-                    
-                    if ndefMode != "PLAIN" {
-                        print("⚠️ NDEF File (0x02) Communication Mode: \(ndefMode) (should be PLAIN)")
-                        allRequirementsMet = false
-                    } else {
-                        print("✅ NDEF File (0x02) Communication Mode: PLAIN")
-                    }
-                    
-                    if !hasNdefData {
-                        print("⚠️ NDEF File (0x02) Data: Empty or invalid - May prevent iOS detection")
-                        // Not blocking, but recommended
-                    } else {
-                        print("✅ NDEF File (0x02) Data: Contains valid NDEF data")
-                    }
-                    
-                     if !allRequirementsMet {
-                         print("\n❌ iOS Background Detection Requirements NOT MET!")
-                         print("💡 Will attempt to fix:")
-                         if !ccFileReadable || ccFileMode != "PLAIN" {
-                             print("   1. Configure CC File (0x01) Read Access = ALL (0xE), Mode = PLAIN")
-                         }
-                         if !ndefReadable || ndefMode != "PLAIN" {
-                             print("   2. Configure NDEF File (0x02) Read Access = ALL (0xE), Mode = PLAIN")
-                         }
-                         print("\n   Starting configuration...")
-                     } else {
-                         print("\n✅ All iOS Background Detection Requirements MET!")
-                         print("   Your tag should be detectable by iOS in background.")
-                     }
-                     
-                     print("\n" + separator)
-                     
-                     // Check if NDEF file needs configuration
-                     let needsNDEFFileConfig = !ndefReadable || ndefMode != "PLAIN"
-                     
-                     // Warn about CC file if needed, but don't configure it automatically
-                     if !ccFileReadable || ccFileMode != "PLAIN" {
-                         print("\n⚠️ WARNING: CC File (0x01) is not configured for iOS background detection!")
-                         print("   💡 Use the 'Configure CC File' button to fix this separately.")
-                         print("   Continuing with NDEF file configuration...")
-                     }
-                     
-                     if needsNDEFFileConfig {
-                         // Configure NDEF file
-                         self.configureNDEFFile(communicator: communicator, session: session, currentSettings: currentSettings)
-                     } else {
-                         // NDEF file is already correctly configured
-                         let successMsg = "NDEF file is already correctly configured for iOS background detection!\n\n" +
-                             "NDEF File (0x02): ✅ Read Access = ALL (0xE), Mode = PLAIN\n\n" +
-                             "⚠️ Note: If CC File (0x01) Read Access is not ALL (0xE), use 'Configure CC File' button to fix it."
-                         print("✅ \(successMsg)")
-                         session.alertMessage = "NDEF file already correctly configured!"
-                         session.invalidate()
-                         self.currentTag = nil
-                         self.communicator = nil
-                         self.onConfigureFileAccessCompleted?(successMsg, nil)
-                     }
-                 }
-             }
-         }
-     }
+        // Configure NDEF file
+        self.configureNDEFFile(communicator: communicator, session: session)
+    }
      
      // Configure CC File Only - separate action
      private func configureCCFileOnly(communicator: DnaCommunicator, session: NFCTagReaderSession) {
@@ -807,207 +623,199 @@ class NTAG424DNAScanner: NSObject, NFCTagReaderSessionDelegate {
      }
      
      // Configure NDEF File (0x02)
-    private func configureNDEFFile(communicator: DnaCommunicator, session: NFCTagReaderSession, currentSettings: FileSettings) {
-        print("\n" + String(repeating: "=", count: 60))
-        print("🔧 Configuring NDEF File (0x02)...")
-        print(String(repeating: "=", count: 60))
-        
-        print("   Current R/W Access: \(currentSettings.readWritePermission.rawValue), Change Access: \(currentSettings.changePermission.rawValue)")
-        if currentSettings.sdmEnabled {
-            print("   Current SDM Options: UID=\(currentSettings.sdmOptionUid), ReadCounter=\(currentSettings.sdmOptionReadCounter)")
-            print("   Current SDM Meta Read: \(currentSettings.sdmMetaReadPermission.rawValue), File Read: \(currentSettings.sdmFileReadPermission.rawValue)")
-        }
-        
-        // Check if we can change the file settings
-        if currentSettings.changePermission != .ALL && currentSettings.changePermission != .KEY_0 {
-            let errorMsg = "Cannot change NDEF file settings: Change Access permission (\(currentSettings.changePermission.rawValue)) does not allow changes"
-            print("❌ \(errorMsg)")
-            session.invalidate(errorMessage: "Change Access permission does not allow file settings modification")
-            self.onConfigureFileAccessCompleted?(nil, NSError(domain: "NTAG424DNAScanner", code: -1, userInfo: [NSLocalizedDescriptionKey: errorMsg]))
-            return
-        }
-        
-        print("   File Number: 0x02 (NDEF File)")
-        print("   Target Configuration:")
-        print("   • Read Access: 0xE (Free/Plain - Critical for iOS Background) ✅")
-        print("   • Write Access: 0x0 (Key Protected - Protects against overwriting)")
-        print("   • R/W Access: 0x3 (Key Protected - Internal management)")
-        print("   • Change Access: 0xE (Free - user changed this)")
-        print("   • SDM: Enabled with UID mirroring and Read Counter")
-        print("   • Communication Mode: PLAIN ✅")
-        
-        // ChangeFileSettings command: 0x5F
-        // According to NTAG 424 DNA datasheet structure (matching GetFileSettings response):
-        // [FileNo] [FileOption] [AccessRights(2)] [FileSize(3)] [SDM params if SDM enabled]
-        // When SDM is enabled and Meta Read Permission = ALL:
-        //   [SDMOptions] [SDMAccessRights(2)] [UIDOffset(3)] [ReadCounterOffset(3)] [MACInputOffset(3)] [MACOffset(3)]
-        
-        let fileNo: UInt8 = DnaCommunicator.NDEF_FILE_NUMBER  // 0x02
-        
-        // FileOption byte: bit 6 = SDM enabled (0x40), bits 1-0 = communication mode (0x00 = Plain)
-        // Preserve current communication mode if possible
-        let currentCommMode = currentSettings.communicationMode
-        var fileOption: UInt8 = 0x40  // SDM enabled (bit 6)
-        // Set communication mode bits (bits 1-0)
-        switch currentCommMode {
-        case .PLAIN:
-            fileOption |= 0x00  // 0b00 = Plain
-        case .MAC:
-            fileOption |= 0x01  // 0b01 = MAC
-        case .FULL:
-            fileOption |= 0x03  // 0b11 = Full
-        default:
-            fileOption |= 0x00  // Default to Plain
-        }
-        
-        let accessRightsByte1: UInt8 = (0xE << 4) | 0x0  // Read: 0xE (Free), Write: 0x0 (Key 0)
-        let accessRightsByte2: UInt8 = (0x3 << 4) | 0xE  // R/W: 0x3 (Key 3), Change: 0xE (Free - user changed this)
-        
-        // File size: Use current file size (3 bytes, little endian) - REQUIRED in ChangeFileSettings
-        let fileSize = currentSettings.fileSize ?? 256
-        let fileSizeBytes: [UInt8] = [
-            UInt8(fileSize & 0xFF),
-            UInt8((fileSize >> 8) & 0xFF),
-            UInt8((fileSize >> 16) & 0xFF)
-        ]
-        
-        // SDM Options: bit 7 = UID mirroring, bit 6 = Read Counter
-        let sdmOptions: UInt8 = 0xC0  // 0b11000000 = UID (bit 7) + Read Counter (bit 6)
-        
-        // SDM Access Rights
-        // SDMAccessRights1: Meta Read (high nibble) | File Read (low nibble)
-        let sdmAccessRights1: UInt8 = (0xE << 4) | 0xE  // Meta Read: 0xE (ALL), File Read: 0xE (ALL)
-        // SDMAccessRights2: bits 7-4 = reserved (0x0), bits 3-0 = Read Counter Retrieval Permission
-        let sdmAccessRights2: UInt8 = 0x0E  // Read Counter Retrieval: 0xE (ALL) in low nibble
-        
-        // SDM Offsets (3 bytes each, little endian)
-        // When Meta Read Permission == ALL and UID option enabled:
-        let uidOffsetBytes: [UInt8] = [0x00, 0x00, 0x00]  // UID Offset: 0x00
-        // When Meta Read Permission == ALL and Read Counter option enabled:
-        let readCounterOffsetBytes: [UInt8] = [0x07, 0x00, 0x00]  // Read Counter Offset: 0x07
-        // When File Read Permission != NONE (0xE != 0xF):
-        let macInputOffsetBytes: [UInt8] = [0x49, 0x00, 0x00]  // MAC Input Offset: 0x49
-        let macOffsetBytes: [UInt8] = [0x7C, 0x00, 0x00]  // MAC Offset: 0x7C
-        
-        // Build command data - MUST match GetFileSettings structure exactly
-        // According to NTAG 424 DNA datasheet, when SDM is enabled with Meta Read Permission = ALL:
-        // Structure: [FileNo] [FileOption] [AccessRights(2)] [FileSize(3)] 
-        //            [SDMOptions] [SDMAccessRights(2)] 
-        //            [UIDOffset(3)] [ReadCounterOffset(3)] [MACInputOffset(3)] [MACOffset(3)]
-        var commandData: [UInt8] = []
-        commandData.append(fileOption)        // 1 byte
-        commandData.append(accessRightsByte1) // 1 byte
-        commandData.append(accessRightsByte2) // 1 byte
-        commandData.append(contentsOf: fileSizeBytes) // 3 bytes - REQUIRED
-        // SDM parameters (only if SDM enabled)
-        commandData.append(sdmOptions)        // 1 byte
-        commandData.append(sdmAccessRights1)  // 1 byte
-        commandData.append(sdmAccessRights2)  // 1 byte
-        // Offsets (when Meta Read Permission == ALL and options enabled)
-        // Since we're setting Meta Read Permission to ALL (0xE) and both UID and Read Counter options are enabled
-        commandData.append(contentsOf: uidOffsetBytes)      // 3 bytes (UID option enabled)
-        commandData.append(contentsOf: readCounterOffsetBytes) // 3 bytes (Read Counter option enabled)
-        // Offsets (when File Read Permission != NONE)
-        // Since we're setting File Read Permission to ALL (0xE), which is != NONE (0xF)
-        commandData.append(contentsOf: macInputOffsetBytes)  // 3 bytes
-        commandData.append(contentsOf: macOffsetBytes)       // 3 bytes
-        
-        print("   Command data length: \(commandData.count) bytes")
-        print("   Command data: \(commandData.map { String(format: "%02X", $0) }.joined(separator: " "))")
-        
-        // Re-authenticate to ensure session is still valid before changing file settings
-        // The getFileSettings call may have affected the authentication session
-        print("\nStep 5: Re-authenticating to ensure session is valid...")
-        let keyBytes = self.dataToBytes(self.passwordData)
-        communicator.authenticateEV2First(keyNum: 0, keyData: keyBytes) { [weak self] authSuccess, authError in
-            guard let self = self else { return }
-            
-            if let authError = authError {
-                let errorMsg = "Re-authentication failed: \(authError.localizedDescription)"
-                print("❌ \(errorMsg)")
-                session.invalidate(errorMessage: errorMsg)
-                self.onConfigureFileAccessCompleted?(nil, authError)
-                return
-            }
-            
-            if !authSuccess {
-                let errorMsg = "Re-authentication failed"
-                print("❌ \(errorMsg)")
-                session.invalidate(errorMessage: errorMsg)
-                self.onConfigureFileAccessCompleted?(nil, NSError(domain: "NTAG424DNAScanner", code: -1, userInfo: [NSLocalizedDescriptionKey: errorMsg]))
-                return
-            }
-            
-            print("✅ Re-authenticated successfully")
-            print("\nStep 6: Sending ChangeFileSettings command (0x5F) with MAC protection...")
-            
-            // Use nxpMacCommand since we need to be authenticated
-            // Note: ChangeFileSettings (0x5F) requires authentication and MAC protection
-            communicator.nxpEncryptedCommand(command: 0x5F, header: [fileNo], data: commandData) { [weak self] result, error in
-                guard let self = self else { return }
-                
-                if let error = error {
-                    let errorMsg = "Failed to configure file access: \(error.localizedDescription)"
-                    print("❌ \(errorMsg)")
-                    session.invalidate(errorMessage: errorMsg)
-                    self.onConfigureFileAccessCompleted?(nil, error)
-                    return
-                }
-                
-                // Check status word
-                if result.statusMajor == 0x91 && result.statusMinor == 0x00 {
-                    let successMsg = "NDEF file access permissions and SDM configured successfully!\n\n" +
-                    "NDEF File (0x02) Access Permissions:\n" +
-                    "• Read Access: Free/Plain (0xE) - Critical for iOS Background ✅\n" +
-                    "• Write Access: Key Protected (0x0) - Protects against overwriting\n" +
-                    "• R/W Access: Key Protected (0x3) - Internal management\n" +
-                    "• Change Access: Free (0xE) - User modified\n\n" +
-                    "SDM Configuration:\n" +
-                    "• SDM: Enabled\n" +
-                    "• UID Mirroring: Enabled (Offset: 0x00)\n" +
-                    "• Read Counter: Enabled (Offset: 0x07)\n" +
-                    "• SDM Meta Read: Free (0xE)\n" +
-                    "• SDM File Read: Free (0xE)\n" +
-                     "• SDM Read Counter Retrieval: Free (0xE)\n" +
-                     "• MAC Input Offset: 0x49\n" +
-                     "• MAC Offset: 0x7C\n\n" +
-                     "📱 iOS Background Detection:\n" +
-                     "✅ NDEF File (0x02) is configured correctly!\n" +
-                     "💡 Note: Also configure CC File (0x01) using 'Configure CC File' button for full iOS background detection support."
-                    print("✅ \(successMsg)")
-                    session.alertMessage = "File access and SDM configured successfully!"
-                    session.invalidate()
-                    self.currentTag = nil
-                    self.communicator = nil
-                    self.onConfigureFileAccessCompleted?(successMsg, nil)
-                } else {
-                    // Error status word received
-                    let statusCode = (Int(result.statusMajor) << 8) | Int(result.statusMinor)
-                    var errorMsg = "Configuration failed with status: 0x\(String(format: "%02X", result.statusMajor))\(String(format: "%02X", result.statusMinor))"
-                    
-                    // Decode common error codes
-                    if result.statusMajor == 0x91 {
-                        switch result.statusMinor {
-                        case 0x7E:
-                            errorMsg += " (Security status not satisfied - authentication may have expired or access rights don't allow this operation)"
-                            print("   💡 Hint: The authentication session may have expired. Try re-authenticating before changing file settings.")
-                            print("   💡 Hint: Ensure the current Change Access permission allows modifications (should be Free/ALL or Key 0)")
-                        case 0x1E:
-                            errorMsg += " (Insufficient NV-Memory to complete command)"
-                        case 0x7C:
-                            errorMsg += " (Length error - command data length incorrect)"
-                        default:
-                            errorMsg += " (Error code: 0x\(String(format: "%02X", result.statusMinor)))"
-                        }
-                    }
-                    
-                    print("❌ \(errorMsg)")
-                    session.invalidate(errorMessage: errorMsg)
-                    self.onConfigureFileAccessCompleted?(nil, NSError(domain: "NTAG424DNAScanner", code: statusCode, userInfo: [NSLocalizedDescriptionKey: errorMsg]))
-                }
-            }
-        }
-    }
+     // According to NTAG 424 DNA datasheet, ChangeFileSettings command structure must match GetFileSettings response
+     // GetFileSettings response structure: [FileType] [FileOption] [AccessRights(2)] [FileSize(3)] [SDM params if SDM enabled]
+     // When SDM is DISABLED:
+     //   ChangeFileSettings structure: [FileNo] [FileOption] [AccessRights(2)] [FileSize(3)]
+     //   NO SDM parameters!
+     private func configureNDEFFile(communicator: DnaCommunicator, session: NFCTagReaderSession) {
+         print("\n" + String(repeating: "=", count: 60))
+         print("🔧 Configuring NDEF File (0x02)...")
+         print(String(repeating: "=", count: 60))
+         
+         // First, read current file settings to get file size and check permissions
+         print("\nStep 1: Reading current NDEF file settings...")
+         communicator.getFileSettings(fileNum: DnaCommunicator.NDEF_FILE_NUMBER) { [weak self] currentSettings, error in
+             guard let self = self else { return }
+             
+             if let error = error {
+                 let errorMsg = "Failed to read NDEF file settings: \(error.localizedDescription)"
+                 print("❌ \(errorMsg)")
+                 session.invalidate(errorMessage: errorMsg)
+                 self.onConfigureFileAccessCompleted?(nil, error)
+                 return
+             }
+             
+             guard let currentSettings = currentSettings else {
+                 let errorMsg = "Failed to get NDEF file settings"
+                 print("❌ \(errorMsg)")
+                 session.invalidate(errorMessage: errorMsg)
+                 self.onConfigureFileAccessCompleted?(nil, NSError(domain: "NTAG424DNAScanner", code: -1, userInfo: [NSLocalizedDescriptionKey: errorMsg]))
+                 return
+             }
+             
+             print("   Current NDEF File Settings:")
+             print("   • Read Access: \(currentSettings.readPermission.rawValue) (\(currentSettings.readPermission.displayValue()))")
+             print("   • Write Access: \(currentSettings.writePermission.rawValue) (\(currentSettings.writePermission.displayValue()))")
+             print("   • R/W Access: \(currentSettings.readWritePermission.rawValue) (\(currentSettings.readWritePermission.displayValue()))")
+             print("   • Change Access: \(currentSettings.changePermission.rawValue) (\(currentSettings.changePermission.displayValue()))")
+             print("   • Communication Mode: \(currentSettings.communicationMode)")
+             print("   • SDM Enabled: \(currentSettings.sdmEnabled)")
+             print("   • File Size: \(currentSettings.fileSize ?? 256) bytes")
+             
+             // Check if we can change the file settings
+             if currentSettings.changePermission != .ALL && currentSettings.changePermission != .KEY_0 {
+                 let errorMsg = "Cannot change NDEF file settings: Change Access permission (\(currentSettings.changePermission.rawValue)) does not allow changes"
+                 print("❌ \(errorMsg)")
+                 session.invalidate(errorMessage: "Change Access permission does not allow file settings modification")
+                 self.onConfigureFileAccessCompleted?(nil, NSError(domain: "NTAG424DNAScanner", code: -1, userInfo: [NSLocalizedDescriptionKey: errorMsg]))
+                 return
+             }
+             
+             print("\nStep 2: Building ChangeFileSettings command...")
+             
+             let fileNo: UInt8 = DnaCommunicator.NDEF_FILE_NUMBER  // 0x02
+             
+             // FileOption byte structure:
+             // - bit 6 = SDM enabled (0x40) - Set to 0 (SDM DISABLED)
+             // - bits 1-0 = communication mode (0x00 = Plain, 0x01 = MAC, 0x03 = FULL)
+             // SDM is DISABLED, so bit 6 = 0
+             // Communication mode = PLAIN (0x00)
+             let fileOption: UInt8 = 0x00  // SDM disabled (bit 6 = 0), PLAIN mode (bits 1-0 = 0x00)
+             
+             // Access Rights:
+             // - Read: 0xE (Free/ALL) - Open for all readers (critical for iOS background detection)
+             // - Write: 0x0 (Key 0) - Requires AES authentication to write
+             // - R/W: 0x0 (Key 0) - Requires authentication
+             // - Change: 0x0 (Key 0) - Requires authentication to change settings
+             let accessRightsByte1: UInt8 = (0xE << 4) | 0x0  // Read: 0xE (Free/ALL), Write: 0x0 (Key 0) = 0xE0
+             let accessRightsByte2: UInt8 = (0x0 << 4) | 0x0  // R/W: 0x0 (Key 0), Change: 0x0 (Key 0) = 0x00
+             
+             // File size: Use current file size (3 bytes, little endian) - REQUIRED in ChangeFileSettings
+             let fileSize = currentSettings.fileSize ?? 256
+             let fileSizeBytes: [UInt8] = [
+                 UInt8(fileSize & 0xFF),
+                 UInt8((fileSize >> 8) & 0xFF),
+                 UInt8((fileSize >> 16) & 0xFF)
+             ]
+             
+             // Build command data
+             // According to NTAG 424 DNA datasheet and NfcDnaKit's changeFileSettings helper:
+             // ChangeFileSettings structure: [FileOption] [AccessRights(2)]
+             // FileSize is NOT included in ChangeFileSettings command (it's read-only or set during file creation)
+             // When SDM is DISABLED: NO SDM parameters!
+             var commandData: [UInt8] = []
+             commandData.append(fileOption)        // 1 byte - FileOption (0x00 = PLAIN, no SDM)
+             commandData.append(accessRightsByte1) // 1 byte - Access rights byte 1 (0xE0)
+             commandData.append(accessRightsByte2) // 1 byte - Access rights byte 2 (0x00)
+             // NO FileSize bytes - FileSize is not part of ChangeFileSettings command
+             // NO SDM parameters since SDM is disabled
+             
+             print("\n   Target Configuration:")
+             print("   • Read Access: ALL (0xE) - Critical for iOS Background ✅")
+             print("   • Write Access: Key 0 (0x0) - Requires AES authentication ✅")
+             print("   • R/W Access: Key 0 (0x0)")
+             print("   • Change Access: Key 0 (0x0)")
+             print("   • Communication Mode: PLAIN ✅")
+             print("   • SDM: Disabled ❌")
+             print("   • File Size: \(fileSize) bytes")
+             print("\n   Command Structure (SDM DISABLED):")
+             print("   • FileNo: 0x\(String(format: "%02X", fileNo)) (in header)")
+             print("   • FileOption: 0x\(String(format: "%02X", fileOption)) (PLAIN mode, SDM disabled)")
+             print("   • AccessRights: 0x\(String(format: "%02X", accessRightsByte1)) 0x\(String(format: "%02X", accessRightsByte2))")
+             print("   Command data length: \(commandData.count) bytes")
+             print("   Command data: \(commandData.map { String(format: "%02X", $0) }.joined(separator: " "))")
+             print("   Expected: 00 E0 00 (FileOption=0x00, AccessRights=0xE0 0x00)")
+             print("   Note: FileSize is NOT included in ChangeFileSettings command")
+             
+             // Re-authenticate to ensure session is still valid before changing file settings
+             print("\nStep 3: Re-authenticating to ensure session is valid...")
+             let keyBytes = self.dataToBytes(self.passwordData)
+             communicator.authenticateEV2First(keyNum: 0, keyData: keyBytes) { [weak self] authSuccess, authError in
+                 guard let self = self else { return }
+                 
+                 if let authError = authError {
+                     let errorMsg = "Re-authentication failed: \(authError.localizedDescription)"
+                     print("❌ \(errorMsg)")
+                     session.invalidate(errorMessage: errorMsg)
+                     self.onConfigureFileAccessCompleted?(nil, authError)
+                     return
+                 }
+                 
+                 if !authSuccess {
+                     let errorMsg = "Re-authentication failed"
+                     print("❌ \(errorMsg)")
+                     session.invalidate(errorMessage: errorMsg)
+                     self.onConfigureFileAccessCompleted?(nil, NSError(domain: "NTAG424DNAScanner", code: -1, userInfo: [NSLocalizedDescriptionKey: errorMsg]))
+                     return
+                 }
+                 
+                 print("✅ Re-authenticated successfully")
+                 print("\nStep 4: Sending ChangeFileSettings command (0x5F) with encryption and MAC protection...")
+                 
+                 // Use nxpEncryptedCommand for ChangeFileSettings
+                 // Note: ChangeFileSettings (0x5F) requires authentication and MAC protection/encryption
+                 communicator.nxpEncryptedCommand(command: 0x5F, header: [fileNo], data: commandData) { [weak self] result, error in
+                     guard let self = self else { return }
+                     
+                     if let error = error {
+                         let errorMsg = "Failed to configure file access: \(error.localizedDescription)"
+                         print("❌ \(errorMsg)")
+                         session.invalidate(errorMessage: errorMsg)
+                         self.onConfigureFileAccessCompleted?(nil, error)
+                         return
+                     }
+                     
+                     // Check status word
+                     if result.statusMajor == 0x91 && result.statusMinor == 0x00 {
+                         print("✅ NDEF file ChangeFileSettings command succeeded!")
+                         
+                         let successMsg = "NDEF file access permissions configured successfully!\n\n" +
+                         "NDEF File (0x02) Access Permissions:\n" +
+                         "• Read Access: Free/ALL (0xE) - Critical for iOS Background ✅\n" +
+                         "• Write Access: Key Protected (0x0) - Protects against overwriting ✅\n" +
+                         "• R/W Access: Key Protected (0x0) - Internal management ✅\n" +
+                         "• Change Access: Key Protected (0x0) - Requires authentication to change settings ✅\n\n" +
+                         "SDM Configuration: Disabled ❌\n\n" +
+                         "📱 iOS Background Detection:\n" +
+                         "✅ NDEF File (0x02) is configured correctly!\n" +
+                         "✅ Readable by all third-party tools (NXP TagWrite, TagInfo, iOS, etc.)\n" +
+                         "✅ Write-protected (requires AES authentication)\n" +
+                         "💡 Note: Also configure CC File (0x01) using 'Configure CC File' button for full iOS background detection support."
+                         print("✅ \(successMsg)")
+                         session.alertMessage = "File access configured successfully!"
+                         session.invalidate()
+                         self.currentTag = nil
+                         self.communicator = nil
+                         self.onConfigureFileAccessCompleted?(successMsg, nil)
+                     } else {
+                         // Error status word received
+                         let statusCode = (Int(result.statusMajor) << 8) | Int(result.statusMinor)
+                         var errorMsg = "Configuration failed with status: 0x\(String(format: "%02X", result.statusMajor))\(String(format: "%02X", result.statusMinor))"
+                         
+                         // Decode common error codes
+                         if result.statusMajor == 0x91 {
+                             switch result.statusMinor {
+                             case 0x7E:
+                                 errorMsg += " Length of command string invalid."
+                             case 0x1E:
+                                 errorMsg += " (Insufficient NV-Memory to complete command)"
+                             case 0x7C:
+                                 errorMsg += " (Length error - command data length incorrect)"
+                                 print("   💡 Hint: Command data length is \(commandData.count) bytes. Expected: 3 bytes (FileOption + AccessRights(2))")
+                             default:
+                                 errorMsg += " (Error code: 0x\(String(format: "%02X", result.statusMinor))"
+                             }
+                         }
+                         
+                         print("❌ \(errorMsg)")
+                         session.invalidate(errorMessage: errorMsg)
+                         self.onConfigureFileAccessCompleted?(nil, NSError(domain: "NTAG424DNAScanner", code: statusCode, userInfo: [NSLocalizedDescriptionKey: errorMsg]))
+                     }
+                 }
+             }
+         }
+     }
     
     // Perform the actual write operation
     private func performWriteData(communicator: DnaCommunicator, session: NFCTagReaderSession) {
@@ -1023,22 +831,35 @@ class NTAG424DNAScanner: NSObject, NFCTagReaderSessionDelegate {
         }
         
         let ndefBytes = dataToBytes(ndefData)
-        print("📤 NDEF message size: \(ndefBytes.count) bytes")
+        print("📤 NDEF message size: \(ndefBytes.count) bytes (TLV wrapped)")
         
         // Write to NDEF file (file number 2)
+        // IMPORTANT: Use PLAIN mode to ensure third-party tools (NXP TagInfo, TagWriter, iOS) can read the data
+        // The NDEF file should be configured with Read Access = ALL (0xE) and Communication Mode = PLAIN
         print("\nStep 3: Writing to NDEF file...")
-        communicator.writeFileData(fileNum: DnaCommunicator.NDEF_FILE_NUMBER, data: ndefBytes, offset: 0) { [weak self] error in
+        print("   • Using PLAIN mode (for third-party tool compatibility)")
+        print("   • Writing at offset: 0x00")
+        print("   • Data format: TLV-wrapped NDEF message")
+        
+        communicator.writeFileData(fileNum: DnaCommunicator.NDEF_FILE_NUMBER, data: ndefBytes, mode: .PLAIN, offset: 0) { [weak self] error in
             guard let self = self else { return }
             
             if let error = error {
                 let errorMsg = "Failed to write NDEF file: \(error.localizedDescription)"
                 print("❌ \(errorMsg)")
+                print("   💡 If this fails, ensure NDEF file is configured with:")
+                print("      • Read Access = ALL (0xE)")
+                print("      • Write Access = Key 0 (requires authentication)")
+                print("      • Communication Mode = PLAIN")
                 session.invalidate(errorMessage: errorMsg)
                 self.onWriteDataCompleted?(false, error)
                 return
             }
             
             print("✅ Data written successfully!")
+            print("   • NDEF message written in TLV format")
+            print("   • NXP TagInfo should now detect 'NDEF Data Storage Populated'")
+            print("   • Third-party tools should be able to read the NDEF message")
             session.alertMessage = "Data written successfully!"
             session.invalidate()
             self.currentTag = nil
@@ -1050,41 +871,133 @@ class NTAG424DNAScanner: NSObject, NFCTagReaderSessionDelegate {
     // MARK: - NDEF Helpers
     
     // Create NDEF message from text/URL string
+    // IMPORTANT: For Type 4 Tag (NTAG 424 DNA), NDEF data must be wrapped in TLV format:
+    // TLV Structure: [0x03] [Length] [NDEF Data] [0xFE]
+    // Where:
+    //   - 0x03 = Tag for NDEF Message TLV
+    //   - Length = 1 byte if < 255, or 3 bytes (0xFF + 2-byte length) if >= 255
+    //   - NDEF Data = The actual NDEF message bytes
+    //   - 0xFE = Terminator TLV
     private func createNDEFMessage(from text: String) -> Data? {
+        // Create the NDEF message payload
+        var ndefPayload: Data?
+        
         // Try to create URI payload first (for URLs)
         if let uriPayload = NFCNDEFPayload.wellKnownTypeURIPayload(string: text) {
             let message = NFCNDEFMessage(records: [uriPayload])
-            return message.asData()
-        }
-        
-        // Fallback to text payload
-        if let textPayload = NFCNDEFPayload.wellKnownTypeTextPayload(string: text, locale: Locale(identifier: "en")) {
+            ndefPayload = message.asData()
+        } else if let textPayload = NFCNDEFPayload.wellKnownTypeTextPayload(string: text, locale: Locale(identifier: "en")) {
+            // Fallback to text payload
             let message = NFCNDEFMessage(records: [textPayload])
-            return message.asData()
+            ndefPayload = message.asData()
         }
         
-        return nil
+        guard let payload = ndefPayload else {
+            return nil
+        }
+        
+        // Wrap the NDEF payload in TLV format for Type 4 Tag (NTAG 424 DNA)
+        var tlvData = Data()
+        tlvData.append(0x03)  // T: NDEF Message TLV tag
+        
+        // L: Length field
+        // IMPORTANT: Single-byte length format supports 0x00 to 0xFE (0-254 bytes)
+        // 0xFF is reserved for long format (3-byte length: 0xFF + 2-byte length)
+        if payload.count <= 254 {
+            // Short format: 1 byte length (max value is 0xFE = 254 bytes)
+            tlvData.append(UInt8(payload.count))
+        } else {
+            // Long format: 0xFF followed by 2-byte length (big endian)
+            // Used for payloads >= 255 bytes
+            tlvData.append(0xFF)
+            tlvData.append(UInt8((payload.count >> 8) & 0xFF))
+            tlvData.append(UInt8(payload.count & 0xFF))
+        }
+        
+        // V: NDEF message data
+        tlvData.append(payload)
+        
+        // Terminator TLV
+        tlvData.append(0xFE)
+        
+        print("   📝 NDEF TLV structure:")
+        print("   • TLV Tag: 0x03")
+        print("   • Payload length: \(payload.count) bytes")
+        print("   • Actual TLV data length: \(tlvData.count) bytes")
+        print("   • TLV format: \(tlvData.prefix(16).map { String(format: "%02X", $0) }.joined(separator: " "))...")
+        print("   💡 Note: NDEF data is wrapped in TLV format for Type 4 Tag compatibility")
+        
+        return tlvData
     }
     
     // Parse NDEF data and extract text/URL
+    // IMPORTANT: For Type 4 Tag (NTAG 424 DNA), NDEF data is wrapped in TLV format:
+    // TLV Structure: [0x03] [Length] [NDEF Data] [0xFE]
     private func parseNDEFData(_ data: Data) -> String {
         guard data.count > 0 else { return "" }
         
-        // Remove padding (0x00 bytes at the end)
-        var trimmedData = data
-        while trimmedData.last == 0x00 {
-            trimmedData = trimmedData.dropLast()
+        // Check if data starts with TLV wrapper (0x03 = NDEF Message TLV tag)
+        var ndefPayload: Data?
+        
+        if data.count >= 2 && data[0] == 0x03 {
+            // Data is wrapped in TLV format
+            let lengthByte = data[1]
+            
+            if lengthByte < 0xFF {
+                // Short format: 1 byte length
+                let payloadStart = 2
+                let payloadLength = Int(lengthByte)
+                
+                if data.count >= payloadStart + payloadLength {
+                    ndefPayload = Data(data[payloadStart..<(payloadStart + payloadLength)])
+                    print("   📥 Extracted NDEF payload from TLV: \(payloadLength) bytes (short format)")
+                } else {
+                    print("   ⚠️ TLV length mismatch: expected \(payloadLength) bytes, but data only has \(data.count - payloadStart) bytes")
+                }
+            } else {
+                // Long format: 0xFF + 2-byte length
+                if data.count >= 5 {
+                    let payloadLength = (Int(data[2]) << 8) | Int(data[3])
+                    let payloadStart = 4
+                    
+                    if data.count >= payloadStart + payloadLength {
+                        ndefPayload = Data(data[payloadStart..<(payloadStart + payloadLength)])
+                        print("   📥 Extracted NDEF payload from TLV: \(payloadLength) bytes (long format)")
+                    } else {
+                        print("   ⚠️ TLV length mismatch: expected \(payloadLength) bytes, but data only has \(data.count - payloadStart) bytes")
+                    }
+                }
+            }
+        } else {
+            // No TLV wrapper, try to parse directly (legacy format)
+            print("   📥 No TLV wrapper detected, parsing as raw NDEF data")
+            
+            // Remove padding (0x00 bytes at the end)
+            var trimmedData = data
+            while trimmedData.last == 0x00 || trimmedData.last == 0xFE {
+                trimmedData = trimmedData.dropLast()
+            }
+            
+            if trimmedData.count > 0 {
+                ndefPayload = trimmedData
+            }
         }
         
-        guard trimmedData.count > 0 else { return "" }
+        guard let payload = ndefPayload, payload.count > 0 else {
+            print("   ❌ Failed to extract NDEF payload from TLV structure")
+            return ""
+        }
         
         // Try to parse as NDEF message
-        if let message = try? NFCNDEFMessage(data: trimmedData) {
+        if let message = try? NFCNDEFMessage(data: payload) {
+            print("   ✅ Successfully parsed NDEF message with \(message.records.count) record(s)")
+            
             for record in message.records {
                 // Check if it's a URI record
                 if record.typeNameFormat == .nfcWellKnown, record.type == Data([0x55]) { // "U" = URI
                     let uri = parseNDEFURIPayload(record.payload)
                     if !uri.isEmpty {
+                        print("   📎 Found URI record: \(uri)")
                         return uri
                     }
                 }
@@ -1093,15 +1006,23 @@ class NTAG424DNAScanner: NSObject, NFCTagReaderSessionDelegate {
                 if record.typeNameFormat == .nfcWellKnown, record.type == Data([0x54]) { // "T" = Text
                     let text = parseNDEFTextPayload(record.payload)
                     if !text.isEmpty {
+                        print("   📝 Found text record: \(text)")
                         return text
                     }
                 }
             }
+        } else {
+            print("   ⚠️ Failed to parse NDEF payload as NFCNDEFMessage")
+            print("   💡 Payload hex (first 32 bytes): \(payload.prefix(32).map { String(format: "%02X", $0) }.joined(separator: " "))")
         }
         
         // Fallback: try to decode as UTF-8 string
-        if let text = String(data: trimmedData, encoding: .utf8), !text.isEmpty {
-            return text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let text = String(data: payload, encoding: .utf8), !text.isEmpty {
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty {
+                print("   📄 Decoded as UTF-8 text: \(trimmed)")
+                return trimmed
+            }
         }
         
         return ""

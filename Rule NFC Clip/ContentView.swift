@@ -9,7 +9,7 @@ import SwiftUI
 import StoreKit
 
 struct ContentView: View {
-    let firewallaAppleId = "1180904053"
+    let firewallaAppleId = "6756568084"
     @State private var showOverlay = false
 
     var body: some View {

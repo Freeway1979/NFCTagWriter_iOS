@@ -14,9 +14,9 @@ struct ContentView: View {
     @State private var nfcMessage: String = ""
     @State private var nfcError: String = ""
     
-    @State private var textPassword: String = "5678"
+    @State private var textPassword: String = ""
     @State private var textRead: String = ""
-    @State private var textToWrite: String = "https://mesh.firewalla.net/nfc?gid=915565a3-65c7-4a2b-8629-194d80ed824b&rule=249&chksum=34fd"
+    @State private var textToWrite: String = ""
     @State private var tagInfo: NFCTagInfo? = nil
     @State private var alertMessage: String = ""
     @State private var showAlert: Bool = false
@@ -95,7 +95,7 @@ struct ContentView: View {
             VStack(alignment: .leading, spacing: 8) {
                 Text("Text to Write:")
                     .font(.headline)
-                TextField("Enter text to write to NFC tag", text: $textToWrite)
+                TextField("Enter URL or text (e.g., https://example.com)", text: $textToWrite)
                     .textFieldStyle(.roundedBorder)
                     .focused($isTextFieldFocused)
                     .textInputAutocapitalization(.never)
@@ -122,6 +122,28 @@ struct ContentView: View {
             }
             .padding(.horizontal)
             
+            // Password Input Section
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Password (Optional):")
+                    .font(.headline)
+                Text("4-character password for tag protection")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                TextField("Enter 4-character password", text: $textPassword)
+                    .textFieldStyle(.roundedBorder)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .keyboardType(.asciiCapable)
+                    .submitLabel(.done)
+                    .onChange(of: textPassword) { oldValue, newValue in
+                        // Limit to 4 characters
+                        if newValue.count > 4 {
+                            textPassword = String(newValue.prefix(4))
+                        }
+                    }
+            }
+            .padding(.horizontal)
+            
             // Protection Mode Toggle
             VStack(alignment: .leading, spacing: 8) {
                 Text("Password Protection Mode:")
@@ -140,7 +162,7 @@ struct ContentView: View {
             }) {
                 HStack {
                     Image(systemName: "lock.fill")
-                    Text("Set Password (\(textPassword))")
+                    Text("Set Password")
                 }
                 .font(.headline)
                 .foregroundColor(.white)
@@ -150,6 +172,7 @@ struct ContentView: View {
                 .cornerRadius(10)
             }
             .padding(.horizontal)
+            .disabled(textPassword.isEmpty)
             
             // Read Tag Info Button
             Button(action: {
@@ -256,23 +279,15 @@ struct ContentView: View {
     }
     
     // Parse URL and extract rule number, toggle state, show alert
+    // This is an optional feature for specific URL formats
     private func handleRuleFromText(_ text: String) {
-        // Pattern: https://firewalla.com/rule/666 or similar
-        let pattern = #"https?://firewalla\.com/rule/(\d+)"#
-        
-        guard let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) else {
-            return
-        }
-        
-        let range = NSRange(text.startIndex..<text.endIndex, in: text)
-        guard let match = regex.firstMatch(in: text, options: [], range: range) else {
-            return
-        }
-        
-        // Extract rule number
-        guard match.numberOfRanges > 1,
-              let ruleNumberRange = Range(match.range(at: 1), in: text),
-              let ruleNumber = Int(text[ruleNumberRange]) else {
+        // Optional: Handle specific URL patterns if needed
+        // This can be customized for different use cases
+        guard let url = URL(string: text),
+              let components = URLComponents(url: url, resolvingAgainstBaseURL: true),
+              let ruleItem = components.queryItems?.first(where: { $0.name == "rule" }),
+              let ruleString = ruleItem.value,
+              let ruleNumber = Int(ruleString) else {
             return
         }
         
@@ -286,7 +301,7 @@ struct ContentView: View {
         
         // Show alert with new state
         let status = newState ? "activated" : "deactivated"
-        alertMessage = "The rule \(ruleNumber) is \(status)"
+        alertMessage = "Rule \(ruleNumber) is \(status)"
         showAlert = true
         
         print("📋 Rule \(ruleNumber) toggled: \(currentState ? "activated" : "deactivated") -> \(newState ? "activated" : "deactivated")")
@@ -332,6 +347,17 @@ struct ContentView: View {
     private func setPassword() {
         nfcMessage = ""
         nfcError = ""
+        
+        guard !textPassword.isEmpty else {
+            nfcError = "Please enter a password"
+            return
+        }
+        
+        guard textPassword.count == 4 else {
+            nfcError = "Password must be exactly 4 characters"
+            return
+        }
+        
         scanner.onReadCompleted = nil
         scanner.onWriteCompleted = nil
         scanner.textPassword = textPassword

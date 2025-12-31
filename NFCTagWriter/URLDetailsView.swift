@@ -155,17 +155,17 @@ struct DetailRow: View {
 
 #Preview {
     URLDetailsView(details: URLDetails(
-        fullURL: "https://mesh.firewalla.com/nfc?gid=915565a3-65c7-4a2b-8629-194d80ed824b&rule=249&chksum=1234567890",
+        fullURL: "https://example.com/nfc?gid=example-id&rule=123&chksum=1234567890",
         scheme: "https",
-        host: "mesh.firewalla.com",
+        host: "example.com",
         path: "/nfc",
         queryItems: [
-            URLQueryItem(name: "gid", value: "915565a3-65c7-4a2b-8629-194d80ed824b"),
-            URLQueryItem(name: "rule", value: "249"),
+            URLQueryItem(name: "gid", value: "example-id"),
+            URLQueryItem(name: "rule", value: "123"),
             URLQueryItem(name: "chksum", value: "1234567890")
         ],
-        gid: "915565a3-65c7-4a2b-8629-194d80ed824b",
-        rule: "249",
+        gid: "example-id",
+        rule: "123",
         chksum: "1234567890",
         checksumValidated: true
     ))

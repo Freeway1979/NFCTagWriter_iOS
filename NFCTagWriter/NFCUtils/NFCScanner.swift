@@ -435,7 +435,13 @@ class NFCScanner: NSObject, NFCTagReaderSessionDelegate {
         }
         
         print("Attempting to write using native writeNDEF API...")
-        let text = self.textToWrite.isEmpty ? "https://firewalla.com" : self.textToWrite
+        guard !self.textToWrite.isEmpty else {
+            session.invalidate(errorMessage: "No text to write. Please enter text or URL.")
+            self.currentTag = nil
+            onWriteCompleted(nil, NSError(domain: "NFCScanner", code: -1, userInfo: [NSLocalizedDescriptionKey: "No text to write"]))
+            return
+        }
+        let text = self.textToWrite
         self.writeStringData(miFareTag: miFareTag, session: session, text: text) { [weak self] result in
             guard let self = self else { return }
             var writeMsg = "Write Successful."

@@ -256,7 +256,7 @@ class NTAG424DNAScanner: NSObject, NFCTagReaderSessionDelegate {
             }
             // Detected as MIFARE - NfcDnaKit cannot be used
             // Inform user that they should use NTAG424Scanner instead, or we could fall back
-            let errorMsg = "NTAG 424 DNA detected as MIFARE tag.\n\nNfcDnaKit requires ISO 7816 tags.\n\nPlease use NTAG424Scanner instead, which supports both ISO 7816 and MIFARE detection.\n\nNote: NTAG 424 DNA tags support AES-128 encryption even when detected as MIFARE."
+            let errorMsg = "NTAG 424 DNA detected as MIFARE tag.\n\nNote: NTAG 424 DNA tags support AES-128 encryption even when detected as MIFARE."
             print("❌ \(errorMsg)")
             print("   Detected tag type: MIFARE")
             print("   Solution: Use NTAG424Scanner which handles MIFARE tags via sendMiFareCommand()")

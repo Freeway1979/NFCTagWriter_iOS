@@ -16,8 +16,8 @@ struct NTAG424View: View {
     @State private var nfcError: String = ""
     @State private var tagUID: String = ""  // Store the last detected tag UID
     
-    @State private var password: String = "915565AB915565AB"  // 16 characters for 16-byte key
-    @State private var textToWrite: String = "https://mesh.firewalla.net/nfc?gid=915565a3-65c7-4a2b-8629-194d80ed824b&rule=249"
+    @State private var password: String = ""  // 16 characters for 16-byte key
+    @State private var textToWrite: String = ""
     @State private var textRead: String = ""
     @FocusState private var isPasswordFocused: Bool
     @FocusState private var isTextFieldFocused: Bool
@@ -97,6 +97,7 @@ struct NTAG424View: View {
                         .cornerRadius(10)
                     }
                     .padding(.horizontal)
+                    .disabled(password.isEmpty || password.count != 16)
                     
                     // Configure CC File Button (for iOS Background Detection)
 //                    Button(action: {
@@ -138,7 +139,7 @@ struct NTAG424View: View {
                     VStack(alignment: .leading, spacing: 8) {
                         Text("Data to Write:")
                             .font(.headline)
-                        TextField("Enter text to write to NTAG 424 tag", text: $textToWrite)
+                        TextField("Enter URL or text ", text: $textToWrite)
                             .textFieldStyle(.roundedBorder)
                             .focused($isTextFieldFocused)
                             .textInputAutocapitalization(.never)
@@ -299,37 +300,33 @@ struct NTAG424View: View {
                     textRead = ""
                 } else if let text = text {
                     textRead = text
-                    // 3. Parse the components
-                    guard let url = URL(string: textRead) else {
-                        nfcError = "Failed to get gid and rid"
-                        return
-                    }
-                    guard let components = URLComponents(url: url, resolvingAgainstBaseURL: true) else { return }
                     
-                    // 4. Extract Query Parameters
-                    if let gidItem = components.queryItems?.first(where: { $0.name == "gid" }),
+                    // Optional: Validate checksum if URL contains gid, rule, and chksum parameters
+                    // This is an optional feature for specific use cases
+                    if let url = URL(string: textRead),
+                       let components = URLComponents(url: url, resolvingAgainstBaseURL: true),
+                       let gidItem = components.queryItems?.first(where: { $0.name == "gid" }),
                        let gid = gidItem.value,
                        let ruleItem = components.queryItems?.first(where: { $0.name == "rule" }),
                        let rid = ruleItem.value,
                        let checkSumItem = components.queryItems?.first(where: { $0.name == "chksum" }),
-                           let chksumPrefix = checkSumItem.value {
+                       let chksumPrefix = checkSumItem.value {
+                        
                         // Read full checksum from UserDefaults using the prefix as key
                         if let fullChecksum = ClipHelper.readChecksum(checksumPrefix: chksumPrefix) {
                             let validated = ClipHelper.verifyCheckSum(checksum: fullChecksum, gid: gid, rid: rid,
                                                                       withAESGCM: false)
                             if validated {
-                                nfcMessage = "Data read success and chksum validated"
+                                nfcMessage = "Data read successfully and checksum validated"
                             } else {
-                                nfcMessage = "Data read success and chksum NOT validated"
+                                nfcMessage = "Data read successfully but checksum validation failed"
                             }
                         } else {
-                            nfcMessage = "Data read success but chksum not found in storage"
+                            nfcMessage = "Data read successfully (checksum not found in storage)"
                         }
-                        print(nfcMessage)
-                        nfcError = ""
-                        return
+                    } else {
+                        nfcMessage = "Data read successfully!"
                     }
-                    nfcMessage = "Data read successfully!"
                     nfcError = ""
                 } else {
                     nfcError = "No data read from tag"
@@ -352,49 +349,39 @@ struct NTAG424View: View {
             nfcError = "Please enter text to write"
             return
         }
-        // get gid and rid from the textToWrite
-        // use queryParams to get gid and rid
         
-        // 3. Parse the components
-        guard let url = URL(string: textToWrite) else {
-            nfcError = "Invalid URL"
-            return
-        }
-        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: true) else {
-            nfcError = "Invalid URL"
-            return
-        }
-        // 4. Extract Query Parameters
-        if let gidItem = components.queryItems?.first(where: { $0.name == "gid" }),
+        // Optional: Generate checksum if URL contains gid and rule parameters
+        // This is an optional feature for specific use cases
+        if let url = URL(string: textToWrite),
+           let components = URLComponents(url: url, resolvingAgainstBaseURL: true),
+           let gidItem = components.queryItems?.first(where: { $0.name == "gid" }),
            let gid = gidItem.value,
            let ruleItem = components.queryItems?.first(where: { $0.name == "rule" }),
            let rid = ruleItem.value {
+            
+            // Generate checksum for URL validation
             let checksum = ClipHelper.genCheckSum(gid: gid, rid: rid, withAESGCM: false)
-            if checksum.isEmpty {
-                nfcError = "Failed to generate checksum"
-                return
-            }
-            
-            // Save checksum to UserDefaults using first 10 characters as key
-            ClipHelper.saveChecksum(checksum: checksum)
-            
-            // Remove any existing chksum parameter
-            components.queryItems = components.queryItems?.filter { $0.name != "chksum" }
-            
-            // Add the new chksum parameter (use only first 10 characters as the stored value)
-            let checksumPrefix = String(checksum.prefix(10))
-            let chksumItem = URLQueryItem(name: "chksum", value: checksumPrefix)
-            if components.queryItems == nil {
-                components.queryItems = []
-            }
-            components.queryItems?.append(chksumItem)
-            
-            // Reconstruct the URL string
-            if let updatedURL = components.url {
-                textToWrite = updatedURL.absoluteString
+            if !checksum.isEmpty {
+                // Save checksum to UserDefaults using first 10 characters as key
+                ClipHelper.saveChecksum(checksum: checksum)
+                
+                // Add checksum to URL if not already present
+                var updatedComponents = components
+                if updatedComponents.queryItems?.first(where: { $0.name == "chksum" }) == nil {
+                    let checksumPrefix = String(checksum.prefix(10))
+                    let chksumItem = URLQueryItem(name: "chksum", value: checksumPrefix)
+                    if updatedComponents.queryItems == nil {
+                        updatedComponents.queryItems = []
+                    }
+                    updatedComponents.queryItems?.append(chksumItem)
+                    
+                    // Reconstruct the URL string with checksum
+                    if let updatedURL = updatedComponents.url {
+                        textToWrite = updatedURL.absoluteString
+                    }
+                }
             }
         }
-        print("textToWrite with checksum:\(textToWrite)")
         scanner.onWriteDataCompleted = { success, error in
             DispatchQueue.main.async {
                 if let error = error {

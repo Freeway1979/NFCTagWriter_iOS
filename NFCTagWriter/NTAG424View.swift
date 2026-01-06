@@ -16,8 +16,8 @@ struct NTAG424View: View {
     @State private var nfcError: String = ""
     @State private var tagUID: String = ""  // Store the last detected tag UID
     
-    @State private var password: String = ""  // 16 characters for 16-byte key
-    @State private var textToWrite: String = ""
+    @State private var password: String = "915565AB915565AB"  // 16 characters for 16-byte key
+    @State private var textToWrite: String = "https://freeway1979.github.io/nfc?gid=915565a3-65c7-4a2b-8629-194d80ed824b&rule=249&u=00000000000000&c=000000"
     @State private var textRead: String = ""
     @FocusState private var isPasswordFocused: Bool
     @FocusState private var isTextFieldFocused: Bool
@@ -360,27 +360,27 @@ struct NTAG424View: View {
            let rid = ruleItem.value {
             
             // Generate checksum for URL validation
-            let checksum = ClipHelper.genCheckSum(gid: gid, rid: rid, withAESGCM: false)
-            if !checksum.isEmpty {
-                // Save checksum to UserDefaults using first 10 characters as key
-                ClipHelper.saveChecksum(checksum: checksum)
-                
-                // Add checksum to URL if not already present
-                var updatedComponents = components
-                if updatedComponents.queryItems?.first(where: { $0.name == "chksum" }) == nil {
-                    let checksumPrefix = String(checksum.prefix(10))
-                    let chksumItem = URLQueryItem(name: "chksum", value: checksumPrefix)
-                    if updatedComponents.queryItems == nil {
-                        updatedComponents.queryItems = []
-                    }
-                    updatedComponents.queryItems?.append(chksumItem)
-                    
-                    // Reconstruct the URL string with checksum
-                    if let updatedURL = updatedComponents.url {
-                        textToWrite = updatedURL.absoluteString
-                    }
-                }
-            }
+//            let checksum = ClipHelper.genCheckSum(gid: gid, rid: rid, withAESGCM: false)
+//            if !checksum.isEmpty {
+//                // Save checksum to UserDefaults using first 10 characters as key
+//                ClipHelper.saveChecksum(checksum: checksum)
+//                
+//                // Add checksum to URL if not already present
+//                var updatedComponents = components
+//                if updatedComponents.queryItems?.first(where: { $0.name == "chksum" }) == nil {
+//                    let checksumPrefix = String(checksum.prefix(10))
+//                    let chksumItem = URLQueryItem(name: "chksum", value: checksumPrefix)
+//                    if updatedComponents.queryItems == nil {
+//                        updatedComponents.queryItems = []
+//                    }
+//                    updatedComponents.queryItems?.append(chksumItem)
+//                    
+//                    // Reconstruct the URL string with checksum
+//                    if let updatedURL = updatedComponents.url {
+//                        textToWrite = updatedURL.absoluteString
+//                    }
+//                }
+//            }
         }
         scanner.onWriteDataCompleted = { success, error in
             DispatchQueue.main.async {
@@ -439,7 +439,6 @@ struct NTAG424View: View {
             nfcError = "Password is required to configure file access"
             return
         }
-        
         scanner.onConfigureFileAccessCompleted = { message, error in
             DispatchQueue.main.async {
                 if let error = error {

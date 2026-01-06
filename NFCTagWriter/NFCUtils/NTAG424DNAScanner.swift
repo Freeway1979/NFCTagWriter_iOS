@@ -747,15 +747,18 @@ class NTAG424DNAScanner: NSObject, NFCTagReaderSessionDelegate {
              
              print("\nStep 2: Building ChangeFileSettings command...")
              
+//             在 NTAG424 中，当 FileOption 的 Bit 6 位（SDM Enabled）为 1 时，指令数据必须遵循以下严格顺序：
+//             [FileOption] + [AccessRights (2b)] + [SdmOptions (1b)] + [SdmAccessRights (2b)] + [UIDOffset (3b)] + [SDMReadCtrOffset (3b)] + ...
+             
              let fileNo: UInt8 = DnaCommunicator.NDEF_FILE_NUMBER  // 0x02
              
-             // FileOption byte structure:
-             // - bit 6 = SDM enabled (0x40) - Set to 0 (SDM DISABLED)
-             // - bits 1-0 = communication mode (0x00 = Plain, 0x01 = MAC, 0x03 = FULL)
-             // SDM is DISABLED, so bit 6 = 0
-             // Communication mode = PLAIN (0x00)
-             let fileOption: UInt8 = 0x00  // SDM disabled (bit 6 = 0), PLAIN mode (bits 1-0 = 0x00)
-             
+             // 1. 基础文件设置
+              // FileOption byte structure:
+              // - bit 6 = SDM enabled (0x40)
+              // - bits 1-0 = communication mode (0x00 = Plain, 0x01 = MAC, 0x03 = FULL)
+              // Communication mode = PLAIN (0x00)
+              let fileOption: UInt8 = 0x40 // Bit 6 = 1 (SDM Enable), Bits 0-1 = 00 (Plain Comm)
+             // 2. 文件访问权限 (Read: Free, Write/RW/Change: Key 0)
              // Access Rights:
              // - Read: 0xE (Free/ALL) - Open for all readers (critical for iOS background detection)
              // - Write: 0x0 (Key 0) - Requires AES authentication to write
@@ -763,27 +766,101 @@ class NTAG424DNAScanner: NSObject, NFCTagReaderSessionDelegate {
              // - Change: 0x0 (Key 0) - Requires authentication to change settings
              let accessRightsByte1: UInt8 = (0x0 << 4) | 0x0  // R/W: 0x0 (Key 0), Change: 0x0 (Key 0) = 0x00
              let accessRightsByte2: UInt8 = (0xE << 4) | 0x0  // Read: 0xE (Free/ALL), Write: 0x0 (Key 0) = 0xE0
+             // 3. SDM 具体配置 (SdmOptions)
+             // Bit 7: UID镜像, Bit 6: ReadCtr镜像, Bit 5: ReadCtr延迟递增, Bit 4: EncFileData, Bit 0: ASCII
+             // 根据 TagInfo 报告：UID mirror enabled, SDMReadCtr enabled, ASCII encoding
+             let sdmOptions: UInt8 = 0xC1 // 1100 0001 -> 开启 UID、Counter 镜像和 ASCII 编码
+             // 4. SDM 访问权限 (SdmAccessRights)
+             // 这定义了谁能看到解密后的 UID 和 Counter。
+             // 格式: [MetaRead(高4位) : FileRead(低4位)] [CtrRet(低4位) : RFU(高4位)]
+             // 0xE: Free/ALL, 0xF: No Access
+             // 根据 TagInfo 报告，成功的配置是：
+             // - Meta Read: Plain PICCData mirror (可能是 0xE 或其他值，但报告显示有 UID/ReadCounter offset)
+             // - File Read: no access (0xF = NONE)
+             // - SDMCtrRet: free access (0xE = ALL)
+             // 注意：当 Meta Read 是 ALL (0xE) 时，使用 UID 和 ReadCounter Offset
+             // 当 Meta Read 不是 ALL 且不是 NONE 时，使用 PICCData Offset
+             // 根据 TagInfo 报告，成功的配置是：
+             // - Meta Read: Plain PICCData mirror (可能是 0xE 或其他值，但报告显示有 UID/ReadCounter offset)
+             // - File Read: no access (0xF = NONE) - **这是关键！**
+             // - SDMCtrRet: free access (0xE = ALL)
+             // 注意：当 Meta Read 是 ALL (0xE) 时，使用 UID 和 ReadCounter Offset
+             // 当 Meta Read 不是 ALL 且不是 NONE 时，使用 PICCData Offset
+             // 但报告显示即使 Meta Read 是 "Plain PICCData mirror"，仍然有 UID 和 ReadCounter Offset
+             // 所以这里使用 MetaRead: ALL (0xE), FileRead: NONE (0xF)
+             // sdmAccessRights1 格式: [MetaRead(高4位) : FileRead(低4位)]
+             // 0xEF = 1110 1111 = MetaRead: 0xE (ALL), FileRead: 0xF (NONE)
+             let sdmAccessRights1: UInt8 = 0xFE // MetaRead: 0xE (ALL/Free), FileRead: 0xF (NONE/No Access)
+             // sdmAccessRights2 格式: [RFU(高4位) : CounterRet(低4位)]
+             // 0x0E = 0000 1110 = CounterRet: 0xE (ALL), RFU: 0x0
+             let sdmAccessRights2: UInt8 = 0xEF // CounterRet: 0xE (ALL/Free), RFU: 0x0
+             // 5. 偏移量 (确保是 3 字节小端序)
+             // 使用 Helper.byteArrayLE 确保正确的字节序转换（与 NfcDnaKit 保持一致）
+             func to3BytesLE(_ val: UInt32) -> [UInt8] {
+                 // Helper.byteArrayLE 返回 4 字节的小端序数组，我们只需要前 3 字节
+                 // 例如：78 (0x4E) -> [0x4E, 0x00, 0x00, 0x00] -> [0x4E, 0x00, 0x00]
+                 let bytes = Helper.byteArrayLE(from: val)
+                 let result = Array(bytes[0...2])  // 取前 3 字节（小端序）
+                 // 验证：对于小端序，最低有效字节应该在第一位
+                 // 例如：78 = 0x0000004E -> [0x4E, 0x00, 0x00]
+                 return result
+             }
+             // 偏移量计算：
+             // SDM 数据附加在 NDEF 文件数据的末尾
+             // 偏移量是相对于文件开始的位置（从 0 开始）
+             // 注意：偏移量应该指向 NDEF 消息中 SDM 数据的位置，而不是文件末尾
+             // 如果 URL 中包含占位符（如 &u=...&c=...），偏移量应该指向这些占位符的位置
              
-             // File size: Use current file size (3 bytes, little endian) - REQUIRED in ChangeFileSettings
              let fileSize = currentSettings.fileSize ?? 256
-             let fileSizeBytes: [UInt8] = [
-                 UInt8(fileSize & 0xFF),
-                 UInt8((fileSize >> 8) & 0xFF),
-                 UInt8((fileSize >> 16) & 0xFF)
-             ]
-             
-            // Build command data
+             let uidOffset = UInt32(85)
+             let ctrOffset = UInt32(85 + 14 + 3)
+             print("   📊 SDM Offset Calculation:")
+             print("   • File Size: \(fileSize) bytes")
+             print("   • UID Offset: \(uidOffset)")
+             print("   • ReadCounter Offset: \(ctrOffset)")
+             // Build command data
              // According to NTAG 424 DNA datasheet and NfcDnaKit's changeFileSettings helper:
              // ChangeFileSettings structure: [FileOption] [AccessRights(2)]
              // FileSize is NOT included in ChangeFileSettings command (it's read-only or set during file creation)
-             // When SDM is DISABLED: NO SDM parameters!
              var commandData: [UInt8] = []
-             commandData.append(fileOption)        // 1 byte - FileOption (0x00 = PLAIN, no SDM)
+             commandData.append(fileOption)        // 1 byte - FileOption
              commandData.append(accessRightsByte1) // 1 byte - Access rights byte 1 (0xE0)
              commandData.append(accessRightsByte2) // 1 byte - Access rights byte 2 (0x00)
-             // NO FileSize bytes - FileSize is not part of ChangeFileSettings command
-             // NO SDM parameters since SDM is disabled
+             // SDM
+             commandData.append(sdmOptions)          // [1 byte]
+             commandData.append(sdmAccessRights1)    // [1 byte]
+             commandData.append(sdmAccessRights2)    // [1 byte]
+             // 当前配置：MetaRead: ALL (0xE), FileRead: NONE (0xF)
+             // 所以只需要 UID 和 ReadCounter Offset
+             let uidOffsetBytes = to3BytesLE(uidOffset)
+             let ctrOffsetBytes = to3BytesLE(ctrOffset)
+             commandData.append(contentsOf: uidOffsetBytes) // [3 bytes] - UID Offset (little endian)
+             commandData.append(contentsOf: ctrOffsetBytes) // [3 bytes] - Read Counter Offset (little endian)
+             // 验证字节序和命令结构
+             print("   🔍 Byte Order Verification:")
+             print("   • UID Offset: \(uidOffset) -> [\(uidOffsetBytes.map { String(format: "%02X", $0) }.joined(separator: " "))]")
+             print("   • ReadCounter Offset: \(ctrOffset) -> [\(ctrOffsetBytes.map { String(format: "%02X", $0) }.joined(separator: " "))]")
+             print("   • Command data length: \(commandData.count) bytes")
+             print("   • Expected structure: FileOption(1) + AccessRights(2) + SDMOptions(1) + SDMAccessRights(2) + UIDOffset(3) + ReadCounterOffset(3) = 12 bytes")
              
+             // 注意：当 fileReadPermission 是 NONE (0xF) 时，不需要包含 MAC 相关偏移量
+             // 这是正确的，因为 FileRead 是 NONE
+             print("   📋 SDM Command Data Structure:")
+             print("   • FileOption: 0x\(String(format: "%02X", fileOption)) (bit 6=SDM, bits 0-1=PLAIN)")
+             print("   • AccessRights: 0x\(String(format: "%02X", accessRightsByte1)) 0x\(String(format: "%02X", accessRightsByte2))")
+             print("   • SDM Options: 0x\(String(format: "%02X", sdmOptions)) (UID=\(sdmOptions & 0x80 != 0), Counter=\(sdmOptions & 0x40 != 0), ASCII=\(sdmOptions & 0x01 != 0))")
+             print("   • SDM Access Rights: 0x\(String(format: "%02X", sdmAccessRights1)) 0x\(String(format: "%02X", sdmAccessRights2))")
+             print("     - MetaRead: 0x\(String(format: "%X", (sdmAccessRights1 >> 4) & 0x0F)) (\((sdmAccessRights1 >> 4) & 0x0F == 0xE ? "ALL" : (sdmAccessRights1 >> 4) & 0x0F == 0xF ? "NONE" : "KEY"))")
+             print("     - FileRead: 0x\(String(format: "%X", sdmAccessRights1 & 0x0F)) (\(sdmAccessRights1 & 0x0F == 0xE ? "ALL" : sdmAccessRights1 & 0x0F == 0xF ? "NONE" : "KEY"))")
+             print("     - CounterRet: 0x\(String(format: "%X", sdmAccessRights2 & 0x0F)) (\(sdmAccessRights2 & 0x0F == 0xE ? "ALL" : sdmAccessRights2 & 0x0F == 0xF ? "NONE" : "KEY"))")
+             print("   • UID Offset: \(uidOffset) (0x\(String(format: "%06X", uidOffset)))")
+             print("   • ReadCounter Offset: \(ctrOffset) (0x\(String(format: "%06X", ctrOffset)))")
+             print("   • Command data bytes: \(commandData.map { String(format: "%02X", $0) }.joined(separator: " "))")
+             print("   • Total command data length: \(commandData.count) bytes")
+             print("   • Expected: 12 bytes (FileOption(1) + AccessRights(2) + SDMOptions(1) + SDMAccessRights(2) + UIDOffset(3) + ReadCounterOffset(3))")
+             
+             // 注意：加密函数应该将其填充为 16 字节，带上 1 字节 FileNo 后，
+             // Lc 字段（Outbound 的第 5 字节）应该是 1 + 16 + 8 = 25 (0x19)。
             print("\n   Target Configuration:")
             print("   • Read Access: ALL (0xE) - Open for all readers (iOS background detection) ✅")
             print("   • Write Access: KEY_0 (0x0) - REQUIRES AUTHENTICATION (blocks unauthorized writes) 🔒")
@@ -796,9 +873,9 @@ class NTAG424DNAScanner: NSObject, NFCTagReaderSessionDelegate {
             print("   • Third-party tools CAN read NDEF data ✅")
             print("   • Third-party tools CANNOT write NDEF data without password 🔒")
             print("   • Only authenticated users (with password) can write NDEF data 🔒")
-            print("\n   Command Structure (SDM DISABLED):")
+            print("\n   Command Structure:")
             print("   • FileNo: 0x\(String(format: "%02X", fileNo)) (in header)")
-            print("   • FileOption: 0x\(String(format: "%02X", fileOption)) (PLAIN mode, SDM disabled)")
+            print("   • FileOption: 0x\(String(format: "%02X", fileOption)) (PLAIN mode)")
             print("   • AccessRights: 0x\(String(format: "%02X", accessRightsByte1)) 0x\(String(format: "%02X", accessRightsByte2))")
             print("   Command data length: \(commandData.count) bytes")
             print("   Command data: \(commandData.map { String(format: "%02X", $0) }.joined(separator: " "))")

@@ -54,9 +54,9 @@ struct NFCTagWriterApp: App {
             
             // Artificial delay to ensure the UI is ready to navigate
             // (Optional, but helps if your app does heavy setup on launch)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                router.handle(url: url)
-            }
+//            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+//                router.handle(url: url)
+//            }
         }
 #endif
     }

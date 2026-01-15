@@ -17,7 +17,8 @@ struct NTAG424View: View {
     @State private var tagUID: String = ""  // Store the last detected tag UID
     
     @State private var password: String = "915565AB915565AB"  // 16 characters for 16-byte key
-    @State private var textToWrite: String = "https://freeway1979.github.io/nfc?gid=915565a3-65c7-4a2b-8629-194d80ed824b&rule=249&u=00000000000000&c=000000"
+    // UID, Reader Counter, CMAC
+    @State private var textToWrite: String = "https://freeway1979.github.io/nfc?gid=915565a3-65c7-4a2b-8629-194d80ed824b&rule=249&u=00000000000000&c=000000&m=0000000000000000"
     @State private var textRead: String = ""
     @FocusState private var isPasswordFocused: Bool
     @FocusState private var isTextFieldFocused: Bool

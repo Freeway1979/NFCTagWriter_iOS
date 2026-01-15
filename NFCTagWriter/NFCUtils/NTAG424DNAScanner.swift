@@ -7,6 +7,241 @@
 import CoreNFC
 import Foundation
 
+import Foundation
+import CryptoSwift
+
+import Foundation
+import CryptoSwift
+
+struct Ntag424Verifier {
+    
+    /// 执行符合 NIST SP 800-38B 的 CMAC 计算
+    /// - Parameters:
+    ///   - key: 16字节 AES 密钥 (Session Key)
+    ///   - message: 待校验的数据字节流
+    /// - Returns: 16字节的原始 MAC 结果
+    func computeCMAC(key: [UInt8], message: [UInt8]) throws -> [UInt8] {
+        // 1. 初始化 AES-128 引擎 (NIST 规范要求)
+        // 2. 使用 CMAC 变体进行认证计算
+        // CryptoSwift 的 CMAC 内部遵循子密钥生成逻辑：
+        // K1 = (L << 1) XOR (L[0] & 0x80 ? 0x87 : 0)
+        let cmac = try CMAC(key: key).authenticate(message)
+        return cmac
+    }
+    // --- 针对 NTAG 424 DNA 的完整校验演示 ---
+//   https://freeway1979.github.io/nfc?gid=915565a3-65c7-4a2b-8629-194d80ed824b&rule=249&u=04A3151A282290&c=000005&m=8C76B2AEA92FF00B
+    func verifyNtagSDM() -> Bool {
+        // 配置数据 [cite: 68, 73, 74]
+        let masterKey = Array(repeating: UInt8(0), count: 16) // 确认为全 0
+        let uid = "04A3151A282290"
+        let ctr = "000005" // 大端序镜像值 [cite: 74]
+        let targetMac = "8C76B2AEA92FF00B"
+        
+        do {
+            // A. 派生 Session Key (KSesSDMMAC)
+            // 注意：手册要求 Counter 使用小端序 (Little-endian) 参与派生
+            let ctrBytes: [UInt8] = hexToBytes(ctr).reversed()  //[0x03, 0x00, 0x00]
+            let uidBytes = hexToBytes(uid)
+            let sv: [UInt8] = [0x3C, 0xC3, 0x00, 0x01, 0x00, 0x80] + uidBytes + ctrBytes
+            
+            let sessionKey = try computeCMAC(key: masterKey, message: sv)
+            print("Session Key (NIST SP 800-38B): \(sessionKey.toHexString().uppercased())")
+            
+            // B. 计算最终 SDM MAC
+            // 基于 sdmMacInputOffset=119，输入数据为空 [cite: 74]
+            let macInput: [UInt8] = []
+            let fullMac = try computeCMAC(key: sessionKey, message: macInput)
+            
+            // C. 按照 NXP 规范截取 (取奇数索引字节)
+            let truncated = (0..<8).map { fullMac[$0 * 2 + 1] }
+            let result = truncated.toHexString().uppercased()
+            
+            print("(NIST SP 800-38B)计算出的 MAC: \(result)")
+            print("(NIST SP 800-38B)预期 MAC: \(targetMac)")
+            
+            let matched = result == targetMac
+            if matched {
+                print("✅ 匹配成功")
+            } else {
+                print("❌ 匹配失败")
+            }
+            return matched
+            
+        } catch {
+            print("(NIST SP 800-38B)计算过程出错: \(error)")
+        }
+        return false
+    }
+    // https://freeway1979.github.io/nfc?gid=915565a3-65c7-4a2b-8629-194d80ed824b&rule=249&u=0464171A282290&c=0000CE&m=EDEC8186BF3D1153
+    static func testMAC() {
+        let verifier = Ntag424Verifier()
+        let key3 = Array(repeating: UInt8(0), count: 16) // 假设 Key 3 为全 0
+        let expected = "EDEC8186BF3D1153"
+        // 尝试 1: 空输入 (最符合你的 Offset 设置)
+        let res1 = verifier.verify(masterKey: key3, uidHex: "0464171A282290", ctrHex: "0000CE", macInStr: "")
+        print("Result 1 (Empty): \(expected) \(res1 ?? "")")
+        
+        // 尝试 2: 包含镜像内容的字符串 (有时 Offset 定义存在偏移)
+        let res2 = verifier.verify(masterKey: key3, uidHex: "0464171A282290", ctrHex: "0000CE", macInStr: "0464171A282290&c=0000CE&m=")
+        print("Result 2 (UID+CTR): \(expected) \(res2 ?? "")")
+        
+        if res1 == expected {
+            print("Found: res1 \(res1 ?? "")")
+        }
+        if res2 == expected {
+            print("Found: res2 \(res2 ?? "")")
+        }
+        verifier.runBruteForce()
+    }
+    
+    // 基于最新扫描报告数据 [cite: 68-83]
+    let uidHex = "0464171A282290"
+    let ctrHex = "0000CE"  // URL 中显示的大端序 [cite: 73]
+    let targetMac = "EDEC8186BF3D1153"
+    let masterKey = Array(repeating: UInt8(0), count: 16) // Key 3 为全 0
+    
+    func runBruteForce() {
+        print("--- NTAG 424 DNA 深度验证 (小端序测试) ---")
+        
+        // 1. 构造小端序 Counter
+        // 原本: [0x00, 0x00, 0xCF] -> 变为: [0xCF, 0x00, 0x00]
+        let ctrBytes = hexToBytes(ctrHex)
+        let ctrLittleEndian = Array(ctrBytes.reversed())
+        
+        // 2. 派生 Session Key (KSesSDMMAC)
+        // SV: 3C C3 00 01 00 80 + UID + CTR(Little Endian)
+        let sv = [0x3C, 0xC3, 0x00, 0x01, 0x00, 0x80] + hexToBytes(uidHex) + ctrLittleEndian
+        print("Session Vector (SV): \(sv.toHexString().uppercased())")
+        
+        guard let sessionKey = try? CMAC(key: masterKey).authenticate(sv) else {
+            print("Session Key 派生失败")
+            return
+        }
+        print("Derived Session Key: \(sessionKey.toHexString().uppercased())")
+        
+        // 3. 测试不同输入消息 [cite: 25-32]
+        // 方案 1: 空数据 (因为 InputOffset = MacOffset = 119) [cite: 68-74]
+        test(key: sessionKey, data: [], label: "方案 1: 空输入")
+        
+        // 方案 2: 包含 UID + CTR 的 ASCII 字符串 (防止 Offset 定义有歧义)
+        let asciiInput = (uidHex + ctrHex).compactMap { $0.asciiValue }
+        test(key: sessionKey, data: asciiInput, label: "方案 2: ASCII(UID+CTR)")
+    }
+    
+    private func test(key: [UInt8], data: [UInt8], label: String) {
+        guard let fullMac = try? CMAC(key: key).authenticate(data) else { return }
+        // 手册规定: 截取奇数索引位
+        let truncated = (0..<8).map { fullMac[$0 * 2 + 1] }
+        let result = truncated.toHexString().uppercased()
+        
+        let status = (result == targetMac) ? "【匹配成功！】" : "[失败]"
+        print("\(status) \(label) -> \(result) (预期: \(targetMac))")
+    }
+    
+    private func hexToBytes(_ hex: String) -> [UInt8] {
+        var result = [UInt8]()
+        var hex = hex
+        while hex.count > 0 {
+            let sub = String(hex.prefix(2))
+            result.append(UInt8(sub, radix: 16)!)
+            hex = String(hex.dropFirst(2))
+        }
+        return result
+    }
+    
+    
+    let uidStr = "0464171A282290"
+    let ctrStr = "0000CE"
+    
+    // 原始 URL 全路径（用于截取测试）
+    let fullUrl = "https://freeway1979.github.io/nfc?gid=915565a3-65c7-4a2b-8629-194d80ed824b&rule=249&u=0464171A282290&c=0000CE&m=EDEC8186BF3D1153"
+    
+    func start() {
+        // 1. 派生 Session Key (KSesSDMMAC)
+        let sv = [0x3C, 0xC3, 0x00, 0x01, 0x00, 0x80] + hexToBytes(uidStr) + hexToBytes(ctrStr)
+        guard let sessionKey = try? CMAC(key: masterKey).authenticate(sv) else { return }
+        
+        print("Session Key: \(sessionKey.toHexString().uppercased())")
+        print("开始遍历可能的输入组合...\n")
+        
+        // 情况 1: 输入为空 (Offset 119)
+        test(key: sessionKey, input: "", label: "空输入 (Offset 119)")
+        
+        // 情况 2: 仅 UID + Counter 字符串 (ASCII)
+        test(key: sessionKey, input: uidStr + ctrStr, label: "纯 UID+CTR 值")
+        
+        // 情况 3: 循环遍历 URL 中的所有可能起点 (从 ? 之后开始)
+        if let queryStart = fullUrl.firstIndex(of: "?") {
+            let queryPart = String(fullUrl[fullUrl.index(after: queryStart)...])
+            
+            // 尝试每个字符作为起点直到 m= 之前
+            for i in 0..<queryPart.count {
+                let startIndex = queryPart.index(queryPart.startIndex, offsetBy: i)
+                let input = String(queryPart[startIndex...])
+                test(key: sessionKey, input: input, label: "Offset \(i) 截取: \(input)")
+            }
+        }
+    }
+    
+    private func test(key: [UInt8], input: String, label: String) {
+        let data = Array(input.utf8)
+        guard let fullMac = try? CMAC(key: key).authenticate(data) else { return }
+        
+        // 截取奇数位
+        var truncated = [UInt8]()
+        for i in 0..<8 { truncated.append(fullMac[i * 2 + 1]) }
+        
+        let result = truncated.toHexString().uppercased()
+        if result == targetMac {
+            print("【！！！ 匹配成功 ！！！】")
+            print("正确模式: \(label)")
+            print("结果: \(result)\n")
+        } else {
+            //                 print("[失败] \(label) -> \(result)") // 调试时可取消注释
+        }
+    }
+    
+    
+    
+    func verify(masterKey: [UInt8], uidHex: String, ctrHex: String, macInStr: String) -> String? {
+        // 1. 准备基础数据
+        let uid = hexToBytes(uidHex)
+        let ctrBytes = hexToBytes(ctrHex)
+        let ctrLittleEndian = Array(ctrBytes.reversed())
+        // 2. 派生 Session Key (KSesSDMMAC)
+        // SV 构造: 3C C3 00 01 00 80 + UID + CTR
+        let sv: [UInt8] = [0x3C, 0xC3, 0x00, 0x01, 0x00, 0x80] + uid + ctrLittleEndian
+        
+        // 使用 CMAC 类替代 AES.authenticate
+        guard let sessionKey = try? CMAC(key: masterKey).authenticate(sv) else { return nil }
+        
+        // 3. 构造 MAC 输入数据
+        // 根据 Offset 119 设置，macInStr 应为空字符串 "" [cite: 53, 73]
+        let macInData = Array(macInStr.bytes)
+        
+        // 4. 计算最终 CMAC
+        guard let fullMac = try? CMAC(key: sessionKey).authenticate(macInData) else { return nil }
+        
+        // 5. 截取 MAC (取奇数索引位: 1, 3, 5, 7, 9, 11, 13, 15)
+        var truncatedMac = [UInt8]()
+        for i in 0..<8 {
+            truncatedMac.append(fullMac[i * 2 + 1])
+        }
+        
+        return truncatedMac.toHexString().uppercased()
+    }
+    
+    //    private func hexToBytes(_ hex: String) -> [UInt8] {
+    //        var result = [UInt8]()
+    //        var hex = hex
+    //        while hex.count > 0 {
+    //            let sub = String(hex.prefix(2))
+    //            if let b = UInt8(sub, radix: 16) { result.append(b) }
+    //            hex = String(hex.dropFirst(2))
+    //        }
+    //        return result
+    //    }
+}
 
 // NTAG 424 Action Types
 enum NTAG424DNAActionType {
@@ -460,9 +695,9 @@ class NTAG424DNAScanner: NSObject, NFCTagReaderSessionDelegate {
     // Perform the actual read operation
     private func performReadData(communicator: DnaCommunicator, session: NFCTagReaderSession) {
         print("\nStep 2: Reading NDEF file...")
-//        Raw Storage: 256 Bytes.
-//        Max Static NDEF Payload: 253 Bytes.
-//        With SDM/SUN Enabled: ~190–200 Bytes (depending on configuration).
+        //        Raw Storage: 256 Bytes.
+        //        Max Static NDEF Payload: 253 Bytes.
+        //        With SDM/SUN Enabled: ~190–200 Bytes (depending on configuration).
         // Read NDEF file (file number 2, max 256 bytes)
         //256 (Total) - 1 (Tag) - 1 (Len) - 1 (Terminator) = 253 bytes.
         communicator.readFileData(fileNum: DnaCommunicator.NDEF_FILE_NUMBER, length: 256, offset: 0) { [weak self] data, error in
@@ -575,99 +810,99 @@ class NTAG424DNAScanner: NSObject, NFCTagReaderSessionDelegate {
         // Configure NDEF file
         self.configureNDEFFile(communicator: communicator, session: session)
     }
-     
-     // Configure CC File Only - separate action
-     private func configureCCFileOnly(communicator: DnaCommunicator, session: NFCTagReaderSession) {
-         print("\n" + String(repeating: "=", count: 60))
-         print("🔧 Configuring CC File (0x01) for iOS Background Detection...")
-         print(String(repeating: "=", count: 60))
-         
-         // Step 1: Authenticate first (required before reading file settings)
-         print("\nStep 1: Authenticating with password...")
-         let keyBytes = self.dataToBytes(self.passwordData)
-         communicator.authenticateEV2First(keyNum: 0, keyData: keyBytes) { [weak self] success, error in
-             guard let self = self else { return }
-             
-             if let error = error {
-                 let errorMsg = "Authentication failed: \(error.localizedDescription)"
-                 print("❌ \(errorMsg)")
-                 session.invalidate(errorMessage: errorMsg)
-                 self.onConfigureCCFileCompleted?(nil, error)
-                 return
-             }
-             
-             if !success {
-                 let errorMsg = "Authentication failed"
-                 print("❌ \(errorMsg)")
-                 session.invalidate(errorMessage: errorMsg)
-                 self.onConfigureCCFileCompleted?(nil, NSError(domain: "NTAG424DNAScanner", code: -1, userInfo: [NSLocalizedDescriptionKey: errorMsg]))
-                 return
-             }
-             
-             print("✅ Authenticated successfully")
-             
-             // Step 2: Read current CC file settings (now that we're authenticated)
-             print("\nStep 2: Reading CC file settings...")
-             communicator.getFileSettings(fileNum: DnaCommunicator.CC_FILE_NUMBER) { [weak self] ccSettings, ccError in
-                 guard let self = self else { return }
-                 print("CC file settings: readPermission \(String(describing: ccSettings?.readPermission))")
-                 if let ccError = ccError {
-                     let errorMsg = "Failed to read CC file settings: \(ccError.localizedDescription)"
-                     print("❌ \(errorMsg)")
-                     session.invalidate(errorMessage: errorMsg)
-                     self.onConfigureCCFileCompleted?(nil, ccError)
-                     return
-                 }
-                 
-                 guard let ccSettings = ccSettings else {
-                     let errorMsg = "Failed to get CC file settings"
-                     print("❌ \(errorMsg)")
-                     session.invalidate(errorMessage: errorMsg)
-                     self.onConfigureCCFileCompleted?(nil, NSError(domain: "NTAG424DNAScanner", code: -1, userInfo: [NSLocalizedDescriptionKey: errorMsg]))
-                     return
-                 }
-                 
-                 // Step 3: Configure CC file
-                 self.configureCCFile(communicator: communicator, session: session, ccSettings: ccSettings) { [weak self] success in
-                     guard let self = self else { return }
-                     if success {
-                         let successMsg = "CC File (0x01) configured successfully for iOS background detection!\n\n" +
-                             "CC File Access Permissions:\n" +
-                             "• Read Access: ALL (0xE) - Critical for iOS Background ✅\n" +
-                             "• Write Access: Key 0 (0x0)\n" +
-                             "• R/W Access: Key 0 (0x0)\n" +
-                             "• Change Access: ALL (0xE)\n" +
-                             "• Communication Mode: PLAIN ✅\n" +
-                             "• SDM: Disabled\n\n" +
-                             "📱 iOS Background Detection:\n" +
-                             "✅ CC File is now configured correctly!\n" +
-                             "   Your tag should be detectable by iOS in background."
-                         print("✅ \(successMsg)")
-                         session.alertMessage = "CC file configured successfully!"
-                         session.invalidate()
-                         self.currentTag = nil
-                         self.communicator = nil
-                         self.onConfigureCCFileCompleted?(successMsg, nil)
-                     } else {
-                         let errorMsg = "Failed to configure CC file"
-                         print("❌ \(errorMsg)")
-                         session.invalidate(errorMessage: errorMsg)
-                         self.onConfigureCCFileCompleted?(nil, NSError(domain: "NTAG424DNAScanner", code: -1, userInfo: [NSLocalizedDescriptionKey: errorMsg]))
-                     }
-                 }
-             }
-         }
-     }
-     
-     // Write CC File (0x01) content directly (no permission configuration)
-     private func configureCCFile(communicator: DnaCommunicator, session: NFCTagReaderSession, ccSettings: FileSettings, completion: @escaping (Bool) -> Void) {
-         print("\n" + String(repeating: "=", count: 60))
-         print("📝 Writing CC File (0x01) Content...")
-         print(String(repeating: "=", count: 60))
-         
-         // CC file content (32 bytes) - Type 4 Tag specification
-         // 001720010000FF0406E104010000000506E10500808283000000000000000000
-         let ccFileContent: [UInt8] = [
+    
+    // Configure CC File Only - separate action
+    private func configureCCFileOnly(communicator: DnaCommunicator, session: NFCTagReaderSession) {
+        print("\n" + String(repeating: "=", count: 60))
+        print("🔧 Configuring CC File (0x01) for iOS Background Detection...")
+        print(String(repeating: "=", count: 60))
+        
+        // Step 1: Authenticate first (required before reading file settings)
+        print("\nStep 1: Authenticating with password...")
+        let keyBytes = self.dataToBytes(self.passwordData)
+        communicator.authenticateEV2First(keyNum: 0, keyData: keyBytes) { [weak self] success, error in
+            guard let self = self else { return }
+            
+            if let error = error {
+                let errorMsg = "Authentication failed: \(error.localizedDescription)"
+                print("❌ \(errorMsg)")
+                session.invalidate(errorMessage: errorMsg)
+                self.onConfigureCCFileCompleted?(nil, error)
+                return
+            }
+            
+            if !success {
+                let errorMsg = "Authentication failed"
+                print("❌ \(errorMsg)")
+                session.invalidate(errorMessage: errorMsg)
+                self.onConfigureCCFileCompleted?(nil, NSError(domain: "NTAG424DNAScanner", code: -1, userInfo: [NSLocalizedDescriptionKey: errorMsg]))
+                return
+            }
+            
+            print("✅ Authenticated successfully")
+            
+            // Step 2: Read current CC file settings (now that we're authenticated)
+            print("\nStep 2: Reading CC file settings...")
+            communicator.getFileSettings(fileNum: DnaCommunicator.CC_FILE_NUMBER) { [weak self] ccSettings, ccError in
+                guard let self = self else { return }
+                print("CC file settings: readPermission \(String(describing: ccSettings?.readPermission))")
+                if let ccError = ccError {
+                    let errorMsg = "Failed to read CC file settings: \(ccError.localizedDescription)"
+                    print("❌ \(errorMsg)")
+                    session.invalidate(errorMessage: errorMsg)
+                    self.onConfigureCCFileCompleted?(nil, ccError)
+                    return
+                }
+                
+                guard let ccSettings = ccSettings else {
+                    let errorMsg = "Failed to get CC file settings"
+                    print("❌ \(errorMsg)")
+                    session.invalidate(errorMessage: errorMsg)
+                    self.onConfigureCCFileCompleted?(nil, NSError(domain: "NTAG424DNAScanner", code: -1, userInfo: [NSLocalizedDescriptionKey: errorMsg]))
+                    return
+                }
+                
+                // Step 3: Configure CC file
+                self.configureCCFile(communicator: communicator, session: session, ccSettings: ccSettings) { [weak self] success in
+                    guard let self = self else { return }
+                    if success {
+                        let successMsg = "CC File (0x01) configured successfully for iOS background detection!\n\n" +
+                        "CC File Access Permissions:\n" +
+                        "• Read Access: ALL (0xE) - Critical for iOS Background ✅\n" +
+                        "• Write Access: Key 0 (0x0)\n" +
+                        "• R/W Access: Key 0 (0x0)\n" +
+                        "• Change Access: ALL (0xE)\n" +
+                        "• Communication Mode: PLAIN ✅\n" +
+                        "• SDM: Disabled\n\n" +
+                        "📱 iOS Background Detection:\n" +
+                        "✅ CC File is now configured correctly!\n" +
+                        "   Your tag should be detectable by iOS in background."
+                        print("✅ \(successMsg)")
+                        session.alertMessage = "CC file configured successfully!"
+                        session.invalidate()
+                        self.currentTag = nil
+                        self.communicator = nil
+                        self.onConfigureCCFileCompleted?(successMsg, nil)
+                    } else {
+                        let errorMsg = "Failed to configure CC file"
+                        print("❌ \(errorMsg)")
+                        session.invalidate(errorMessage: errorMsg)
+                        self.onConfigureCCFileCompleted?(nil, NSError(domain: "NTAG424DNAScanner", code: -1, userInfo: [NSLocalizedDescriptionKey: errorMsg]))
+                    }
+                }
+            }
+        }
+    }
+    
+    // Write CC File (0x01) content directly (no permission configuration)
+    private func configureCCFile(communicator: DnaCommunicator, session: NFCTagReaderSession, ccSettings: FileSettings, completion: @escaping (Bool) -> Void) {
+        print("\n" + String(repeating: "=", count: 60))
+        print("📝 Writing CC File (0x01) Content...")
+        print(String(repeating: "=", count: 60))
+        
+        // CC file content (32 bytes) - Type 4 Tag specification
+        // 001720010000FF0406E104010000000506E10500808283000000000000000000
+        let ccFileContent: [UInt8] = [
             0x00, 0x17,  // CCLEN (23 bytes)
             0x20,        // Mapping Version (2.0)
             0x01, 0x00,  // MLe (256 bytes)
@@ -675,192 +910,192 @@ class NTAG424DNAScanner: NSObject, NFCTagReaderSessionDelegate {
             0x04, 0x06, 0xE1, 0x04, 0x01, 0x00, 0x00, 0x00,  // NDEF-File Control TLV
             0x05, 0x06, 0xE1, 0x05, 0x00, 0x80, 0x82, 0x83,  // Data File Control TLV
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00  // Padding (9 bytes)
-         ]
-         
-         print("   CC File Content: \(ccFileContent.map { String(format: "%02X", $0) }.joined(separator: " "))")
-         print("   Total size: \(ccFileContent.count) bytes")
-         
-         // Write CC file content directly (no permission configuration)
-         communicator.writeFileData(fileNum: DnaCommunicator.CC_FILE_NUMBER, data: ccFileContent, mode: .PLAIN, offset: 0) { [weak self] writeError in
-             guard let self = self else { return }
-             
-             if let writeError = writeError {
-                 print("❌ Failed to write CC file content: \(writeError.localizedDescription)")
-                 completion(false)
-                 return
-             }
-             
-             print("✅ CC file content written successfully!")
-             completion(true)
-         }
-     }
-     
-     // Configure NDEF File (0x02)
-     // According to NTAG 424 DNA datasheet, ChangeFileSettings command structure must match GetFileSettings response
-     // GetFileSettings response structure: [FileType] [FileOption] [AccessRights(2)] [FileSize(3)] [SDM params if SDM enabled]
-     // When SDM is DISABLED:
-     //   ChangeFileSettings structure: [FileNo] [FileOption] [AccessRights(2)] [FileSize(3)]
-     //   NO SDM parameters!
-     private func configureNDEFFile(communicator: DnaCommunicator, session: NFCTagReaderSession) {
-         print("\n" + String(repeating: "=", count: 60))
-         print("🔧 Configuring NDEF File (0x02)...")
-         print(String(repeating: "=", count: 60))
-         
-         // First, read current file settings to get file size and check permissions
-         print("\nStep 1: Reading current NDEF file settings...")
-         communicator.getFileSettings(fileNum: DnaCommunicator.NDEF_FILE_NUMBER) { [weak self] currentSettings, error in
-             guard let self = self else { return }
-             
-             if let error = error {
-                 let errorMsg = "Failed to read NDEF file settings: \(error.localizedDescription)"
-                 print("❌ \(errorMsg)")
-                 session.invalidate(errorMessage: errorMsg)
-                 self.onConfigureFileAccessCompleted?(nil, error)
-                 return
-             }
-             
-             guard let currentSettings = currentSettings else {
-                 let errorMsg = "Failed to get NDEF file settings"
-                 print("❌ \(errorMsg)")
-                 session.invalidate(errorMessage: errorMsg)
-                 self.onConfigureFileAccessCompleted?(nil, NSError(domain: "NTAG424DNAScanner", code: -1, userInfo: [NSLocalizedDescriptionKey: errorMsg]))
-                 return
-             }
-             
-             print("   Current NDEF File Settings:")
-             print("   • Read Access: \(currentSettings.readPermission.rawValue) (\(currentSettings.readPermission.displayValue()))")
-             print("   • Write Access: \(currentSettings.writePermission.rawValue) (\(currentSettings.writePermission.displayValue()))")
-             print("   • R/W Access: \(currentSettings.readWritePermission.rawValue) (\(currentSettings.readWritePermission.displayValue()))")
-             print("   • Change Access: \(currentSettings.changePermission.rawValue) (\(currentSettings.changePermission.displayValue()))")
-             print("   • Communication Mode: \(currentSettings.communicationMode)")
-             print("   • SDM Enabled: \(currentSettings.sdmEnabled)")
-             print("   • File Size: \(currentSettings.fileSize ?? 256) bytes")
-             
-             // Check if we can change the file settings
-             if currentSettings.changePermission != .ALL && currentSettings.changePermission != .KEY_0 {
-                 let errorMsg = "Cannot change NDEF file settings: Change Access permission (\(currentSettings.changePermission.rawValue)) does not allow changes"
-                 print("❌ \(errorMsg)")
-                 session.invalidate(errorMessage: "Change Access permission does not allow file settings modification")
-                 self.onConfigureFileAccessCompleted?(nil, NSError(domain: "NTAG424DNAScanner", code: -1, userInfo: [NSLocalizedDescriptionKey: errorMsg]))
-                 return
-             }
-             
-             print("\nStep 2: Building ChangeFileSettings command...")
-             
-//             在 NTAG424 中，当 FileOption 的 Bit 6 位（SDM Enabled）为 1 时，指令数据必须遵循以下严格顺序：
-//             [FileOption] + [AccessRights (2b)] + [SdmOptions (1b)] + [SdmAccessRights (2b)] + [UIDOffset (3b)] + [SDMReadCtrOffset (3b)] + ...
-             
-             let fileNo: UInt8 = DnaCommunicator.NDEF_FILE_NUMBER  // 0x02
-             
-             // 1. 基础文件设置
-              // FileOption byte structure:
-              // - bit 6 = SDM enabled (0x40)
-              // - bits 1-0 = communication mode (0x00 = Plain, 0x01 = MAC, 0x03 = FULL)
-              // Communication mode = PLAIN (0x00)
-              let fileOption: UInt8 = 0x40 // Bit 6 = 1 (SDM Enable), Bits 0-1 = 00 (Plain Comm)
-             // 2. 文件访问权限 (Read: Free, Write/RW/Change: Key 0)
-             // Access Rights:
-             // - Read: 0xE (Free/ALL) - Open for all readers (critical for iOS background detection)
-             // - Write: 0x0 (Key 0) - Requires AES authentication to write
-             // - R/W: 0x0 (Key 0) - Requires authentication
-             // - Change: 0x0 (Key 0) - Requires authentication to change settings
-             let accessRightsByte1: UInt8 = (0x0 << 4) | 0x0  // R/W: 0x0 (Key 0), Change: 0x0 (Key 0) = 0x00
-             let accessRightsByte2: UInt8 = (0xE << 4) | 0x0  // Read: 0xE (Free/ALL), Write: 0x0 (Key 0) = 0xE0
-             // 3. SDM 具体配置 (SdmOptions)
-             // Bit 7: UID镜像, Bit 6: ReadCtr镜像, Bit 5: ReadCtr延迟递增, Bit 4: EncFileData, Bit 0: ASCII
-             // 根据 TagInfo 报告：UID mirror enabled, SDMReadCtr enabled, ASCII encoding
-             let sdmOptions: UInt8 = 0xC1 // 1100 0001 -> 开启 UID、Counter 镜像和 ASCII 编码
-             // 4. SDM 访问权限 (SdmAccessRights)
-             // 这定义了谁能看到解密后的 UID 和 Counter。
-             // 格式: [MetaRead(高4位) : FileRead(低4位)] [CtrRet(低4位) : RFU(高4位)]
-             // 0xE: Free/ALL, 0xF: No Access
-             // 根据 TagInfo 报告，成功的配置是：
-             // - Meta Read: Plain PICCData mirror (可能是 0xE 或其他值，但报告显示有 UID/ReadCounter offset)
-             // - File Read: no access (0xF = NONE)
-             // - SDMCtrRet: free access (0xE = ALL)
-             // 注意：当 Meta Read 是 ALL (0xE) 时，使用 UID 和 ReadCounter Offset
-             // 当 Meta Read 不是 ALL 且不是 NONE 时，使用 PICCData Offset
-             // 根据 TagInfo 报告，成功的配置是：
-             // - Meta Read: Plain PICCData mirror (可能是 0xE 或其他值，但报告显示有 UID/ReadCounter offset)
-             // - File Read: no access (0xF = NONE) - **这是关键！**
-             // - SDMCtrRet: free access (0xE = ALL)
-             // 注意：当 Meta Read 是 ALL (0xE) 时，使用 UID 和 ReadCounter Offset
-             // 当 Meta Read 不是 ALL 且不是 NONE 时，使用 PICCData Offset
-             // 但报告显示即使 Meta Read 是 "Plain PICCData mirror"，仍然有 UID 和 ReadCounter Offset
-             // 所以这里使用 MetaRead: ALL (0xE), FileRead: NONE (0xF)
-             // sdmAccessRights1 格式: [MetaRead(高4位) : FileRead(低4位)]
-             // 0xEF = 1110 1111 = MetaRead: 0xE (ALL), FileRead: 0xF (NONE)
-             let sdmAccessRights1: UInt8 = 0xFE // MetaRead: 0xE (ALL/Free), FileRead: 0xF (NONE/No Access)
-             // sdmAccessRights2 格式: [RFU(高4位) : CounterRet(低4位)]
-             // 0x0E = 0000 1110 = CounterRet: 0xE (ALL), RFU: 0x0
-             let sdmAccessRights2: UInt8 = 0xEF // CounterRet: 0xE (ALL/Free), RFU: 0x0
-             // 5. 偏移量 (确保是 3 字节小端序)
-             // 使用 Helper.byteArrayLE 确保正确的字节序转换（与 NfcDnaKit 保持一致）
-             func to3BytesLE(_ val: UInt32) -> [UInt8] {
-                 // Helper.byteArrayLE 返回 4 字节的小端序数组，我们只需要前 3 字节
-                 // 例如：78 (0x4E) -> [0x4E, 0x00, 0x00, 0x00] -> [0x4E, 0x00, 0x00]
-                 let bytes = Helper.byteArrayLE(from: val)
-                 let result = Array(bytes[0...2])  // 取前 3 字节（小端序）
-                 // 验证：对于小端序，最低有效字节应该在第一位
-                 // 例如：78 = 0x0000004E -> [0x4E, 0x00, 0x00]
-                 return result
-             }
-             // 偏移量计算：
-             // SDM 数据附加在 NDEF 文件数据的末尾
-             // 偏移量是相对于文件开始的位置（从 0 开始）
-             // 注意：偏移量应该指向 NDEF 消息中 SDM 数据的位置，而不是文件末尾
-             // 如果 URL 中包含占位符（如 &u=...&c=...），偏移量应该指向这些占位符的位置
-             
-             let fileSize = currentSettings.fileSize ?? 256
-             let uidOffset = UInt32(85)
-             let ctrOffset = UInt32(85 + 14 + 3)
-             print("   📊 SDM Offset Calculation:")
-             print("   • File Size: \(fileSize) bytes")
-             print("   • UID Offset: \(uidOffset)")
-             print("   • ReadCounter Offset: \(ctrOffset)")
-             // Build command data
-             // According to NTAG 424 DNA datasheet and NfcDnaKit's changeFileSettings helper:
-             // ChangeFileSettings structure: [FileOption] [AccessRights(2)]
-             // FileSize is NOT included in ChangeFileSettings command (it's read-only or set during file creation)
-             var commandData: [UInt8] = []
-             commandData.append(fileOption)        // 1 byte - FileOption
-             commandData.append(accessRightsByte1) // 1 byte - Access rights byte 1 (0xE0)
-             commandData.append(accessRightsByte2) // 1 byte - Access rights byte 2 (0x00)
-             // SDM
-             commandData.append(sdmOptions)          // [1 byte]
-             commandData.append(sdmAccessRights1)    // [1 byte]
-             commandData.append(sdmAccessRights2)    // [1 byte]
-             // 当前配置：MetaRead: ALL (0xE), FileRead: NONE (0xF)
-             // 所以只需要 UID 和 ReadCounter Offset
-             let uidOffsetBytes = to3BytesLE(uidOffset)
-             let ctrOffsetBytes = to3BytesLE(ctrOffset)
-             commandData.append(contentsOf: uidOffsetBytes) // [3 bytes] - UID Offset (little endian)
-             commandData.append(contentsOf: ctrOffsetBytes) // [3 bytes] - Read Counter Offset (little endian)
-             // 验证字节序和命令结构
-             print("   🔍 Byte Order Verification:")
-             print("   • UID Offset: \(uidOffset) -> [\(uidOffsetBytes.map { String(format: "%02X", $0) }.joined(separator: " "))]")
-             print("   • ReadCounter Offset: \(ctrOffset) -> [\(ctrOffsetBytes.map { String(format: "%02X", $0) }.joined(separator: " "))]")
-             print("   • Command data length: \(commandData.count) bytes")
-             print("   • Expected structure: FileOption(1) + AccessRights(2) + SDMOptions(1) + SDMAccessRights(2) + UIDOffset(3) + ReadCounterOffset(3) = 12 bytes")
-             
-             // 注意：当 fileReadPermission 是 NONE (0xF) 时，不需要包含 MAC 相关偏移量
-             // 这是正确的，因为 FileRead 是 NONE
-             print("   📋 SDM Command Data Structure:")
-             print("   • FileOption: 0x\(String(format: "%02X", fileOption)) (bit 6=SDM, bits 0-1=PLAIN)")
-             print("   • AccessRights: 0x\(String(format: "%02X", accessRightsByte1)) 0x\(String(format: "%02X", accessRightsByte2))")
-             print("   • SDM Options: 0x\(String(format: "%02X", sdmOptions)) (UID=\(sdmOptions & 0x80 != 0), Counter=\(sdmOptions & 0x40 != 0), ASCII=\(sdmOptions & 0x01 != 0))")
-             print("   • SDM Access Rights: 0x\(String(format: "%02X", sdmAccessRights1)) 0x\(String(format: "%02X", sdmAccessRights2))")
-             print("     - MetaRead: 0x\(String(format: "%X", (sdmAccessRights1 >> 4) & 0x0F)) (\((sdmAccessRights1 >> 4) & 0x0F == 0xE ? "ALL" : (sdmAccessRights1 >> 4) & 0x0F == 0xF ? "NONE" : "KEY"))")
-             print("     - FileRead: 0x\(String(format: "%X", sdmAccessRights1 & 0x0F)) (\(sdmAccessRights1 & 0x0F == 0xE ? "ALL" : sdmAccessRights1 & 0x0F == 0xF ? "NONE" : "KEY"))")
-             print("     - CounterRet: 0x\(String(format: "%X", sdmAccessRights2 & 0x0F)) (\(sdmAccessRights2 & 0x0F == 0xE ? "ALL" : sdmAccessRights2 & 0x0F == 0xF ? "NONE" : "KEY"))")
-             print("   • UID Offset: \(uidOffset) (0x\(String(format: "%06X", uidOffset)))")
-             print("   • ReadCounter Offset: \(ctrOffset) (0x\(String(format: "%06X", ctrOffset)))")
-             print("   • Command data bytes: \(commandData.map { String(format: "%02X", $0) }.joined(separator: " "))")
-             print("   • Total command data length: \(commandData.count) bytes")
-             print("   • Expected: 12 bytes (FileOption(1) + AccessRights(2) + SDMOptions(1) + SDMAccessRights(2) + UIDOffset(3) + ReadCounterOffset(3))")
-             
-             // 注意：加密函数应该将其填充为 16 字节，带上 1 字节 FileNo 后，
-             // Lc 字段（Outbound 的第 5 字节）应该是 1 + 16 + 8 = 25 (0x19)。
+        ]
+        
+        print("   CC File Content: \(ccFileContent.map { String(format: "%02X", $0) }.joined(separator: " "))")
+        print("   Total size: \(ccFileContent.count) bytes")
+        
+        // Write CC file content directly (no permission configuration)
+        communicator.writeFileData(fileNum: DnaCommunicator.CC_FILE_NUMBER, data: ccFileContent, mode: .PLAIN, offset: 0) { [weak self] writeError in
+            guard let self = self else { return }
+            
+            if let writeError = writeError {
+                print("❌ Failed to write CC file content: \(writeError.localizedDescription)")
+                completion(false)
+                return
+            }
+            
+            print("✅ CC file content written successfully!")
+            completion(true)
+        }
+    }
+    
+    // Configure NDEF File (0x02)
+    // According to NTAG 424 DNA datasheet, ChangeFileSettings command structure must match GetFileSettings response
+    // GetFileSettings response structure: [FileType] [FileOption] [AccessRights(2)] [FileSize(3)] [SDM params if SDM enabled]
+    // When SDM is DISABLED:
+    //   ChangeFileSettings structure: [FileNo] [FileOption] [AccessRights(2)] [FileSize(3)]
+    //   NO SDM parameters!
+    private func configureNDEFFile(communicator: DnaCommunicator, session: NFCTagReaderSession) {
+        print("\n" + String(repeating: "=", count: 60))
+        print("🔧 Configuring NDEF File (0x02)...")
+        print(String(repeating: "=", count: 60))
+        
+        // First, read current file settings to get file size and check permissions
+        print("\nStep 1: Reading current NDEF file settings...")
+        communicator.getFileSettings(fileNum: DnaCommunicator.NDEF_FILE_NUMBER) { [weak self] currentSettings, error in
+            guard let self = self else { return }
+            
+            if let error = error {
+                let errorMsg = "Failed to read NDEF file settings: \(error.localizedDescription)"
+                print("❌ \(errorMsg)")
+                session.invalidate(errorMessage: errorMsg)
+                self.onConfigureFileAccessCompleted?(nil, error)
+                return
+            }
+            
+            guard let currentSettings = currentSettings else {
+                let errorMsg = "Failed to get NDEF file settings"
+                print("❌ \(errorMsg)")
+                session.invalidate(errorMessage: errorMsg)
+                self.onConfigureFileAccessCompleted?(nil, NSError(domain: "NTAG424DNAScanner", code: -1, userInfo: [NSLocalizedDescriptionKey: errorMsg]))
+                return
+            }
+            
+            print("   Current NDEF File Settings:")
+            print("   • Read Access: \(currentSettings.readPermission.rawValue) (\(currentSettings.readPermission.displayValue()))")
+            print("   • Write Access: \(currentSettings.writePermission.rawValue) (\(currentSettings.writePermission.displayValue()))")
+            print("   • R/W Access: \(currentSettings.readWritePermission.rawValue) (\(currentSettings.readWritePermission.displayValue()))")
+            print("   • Change Access: \(currentSettings.changePermission.rawValue) (\(currentSettings.changePermission.displayValue()))")
+            print("   • Communication Mode: \(currentSettings.communicationMode)")
+            print("   • SDM Enabled: \(currentSettings.sdmEnabled)")
+            print("   • File Size: \(currentSettings.fileSize ?? 256) bytes")
+            
+            // Check if we can change the file settings
+            if currentSettings.changePermission != .ALL && currentSettings.changePermission != .KEY_0 {
+                let errorMsg = "Cannot change NDEF file settings: Change Access permission (\(currentSettings.changePermission.rawValue)) does not allow changes"
+                print("❌ \(errorMsg)")
+                session.invalidate(errorMessage: "Change Access permission does not allow file settings modification")
+                self.onConfigureFileAccessCompleted?(nil, NSError(domain: "NTAG424DNAScanner", code: -1, userInfo: [NSLocalizedDescriptionKey: errorMsg]))
+                return
+            }
+            
+            print("\nStep 2: Building ChangeFileSettings command...")
+            
+            //             在 NTAG424 中，当 FileOption 的 Bit 6 位（SDM Enabled）为 1 时，指令数据必须遵循以下严格顺序：
+            //             [FileOption] + [AccessRights (2b)] + [SdmOptions (1b)] + [SdmAccessRights (2b)] + [UIDOffset (3b)] + [SDMReadCtrOffset (3b)] + ...
+            
+            let fileNo: UInt8 = DnaCommunicator.NDEF_FILE_NUMBER  // 0x02
+            
+            // 1. 基础文件设置
+            // FileOption byte structure:
+            // - bit 6 = SDM enabled (0x40)
+            // - bits 1-0 = communication mode (0x00 = Plain, 0x01 = MAC, 0x03 = FULL)
+            // Communication mode = PLAIN (0x00)
+            let fileOption: UInt8 = 0x40 // Bit 6 = 1 (SDM Enable), Bits 0-1 = 00 (Plain Comm)
+            // 2. 文件访问权限 (Read: Free, Write/RW/Change: Key 0)
+            // Access Rights:
+            // - Read: 0xE (Free/ALL) - Open for all readers (critical for iOS background detection)
+            // - Write: 0x0 (Key 0) - Requires AES authentication to write
+            // - R/W: 0x0 (Key 0) - Requires authentication
+            // - Change: 0x0 (Key 0) - Requires authentication to change settings
+            let accessRightsByte1: UInt8 = (0x0 << 4) | 0x0  // R/W: 0x0 (Key 0), Change: 0x0 (Key 0) = 0x00
+            let accessRightsByte2: UInt8 = (0xE << 4) | 0x0  // Read: 0xE (Free/ALL), Write: 0x0 (Key 0) = 0xE0
+            // 3. SDM 具体配置 (SdmOptions)
+            // Bit 7: UID镜像, Bit 6: ReadCtr镜像, Bit 5: ReadCtr延迟递增, Bit 4: EncFileData, Bit 0: ASCII
+            // 根据 TagInfo 报告：UID mirror enabled, SDMReadCtr enabled, ASCII encoding
+            let sdmOptions: UInt8 = 0xC1 // 1100 0001 -> 开启 UID、Counter 镜像和 ASCII 编码
+            // 4. SDM 访问权限 (SdmAccessRights)
+            // 这定义了谁能看到解密后的 UID 和 Counter。
+            // 格式: [MetaRead(高4位) : FileRead(低4位)] [CtrRet(低4位) : RFU(高4位)]
+            // 0xE: Free/ALL, 0xF: No Access
+            // 根据 TagInfo 报告，成功的配置是：
+            // - Meta Read: Plain PICCData mirror (可能是 0xE 或其他值，但报告显示有 UID/ReadCounter offset)
+            // - File Read: no access (0xF = NONE)
+            // - SDMCtrRet: free access (0xE = ALL)
+            // 注意：当 Meta Read 是 ALL (0xE) 时，使用 UID 和 ReadCounter Offset
+            // 当 Meta Read 不是 ALL 且不是 NONE 时，使用 PICCData Offset
+            // 根据 TagInfo 报告，成功的配置是：
+            // - Meta Read: Plain PICCData mirror (可能是 0xE 或其他值，但报告显示有 UID/ReadCounter offset)
+            // - File Read: no access (0xF = NONE) - **这是关键！**
+            // - SDMCtrRet: free access (0xE = ALL)
+            // 注意：当 Meta Read 是 ALL (0xE) 时，使用 UID 和 ReadCounter Offset
+            // 当 Meta Read 不是 ALL 且不是 NONE 时，使用 PICCData Offset
+            // 但报告显示即使 Meta Read 是 "Plain PICCData mirror"，仍然有 UID 和 ReadCounter Offset
+            // 所以这里使用 MetaRead: ALL (0xE), FileRead: NONE (0xF)
+            // sdmAccessRights1 格式: [MetaRead(高4位) : FileRead(低4位)]
+            // 0xEF = 1110 1111 = MetaRead: 0xE (ALL), FileRead: 0xF (NONE)
+            let sdmAccessRights1: UInt8 = 0xFE // MetaRead: 0xE (ALL/Free), FileRead: 0xF (NONE/No Access)
+            // sdmAccessRights2 格式: [RFU(高4位) : CounterRet(低4位)]
+            // 0x0E = 0000 1110 = CounterRet: 0xE (ALL), RFU: 0x0
+            let sdmAccessRights2: UInt8 = 0xEF // CounterRet: 0xE (ALL/Free), RFU: 0x0
+            // 5. 偏移量 (确保是 3 字节小端序)
+            // 使用 Helper.byteArrayLE 确保正确的字节序转换（与 NfcDnaKit 保持一致）
+            func to3BytesLE(_ val: UInt32) -> [UInt8] {
+                // Helper.byteArrayLE 返回 4 字节的小端序数组，我们只需要前 3 字节
+                // 例如：78 (0x4E) -> [0x4E, 0x00, 0x00, 0x00] -> [0x4E, 0x00, 0x00]
+                let bytes = Helper.byteArrayLE(from: val)
+                let result = Array(bytes[0...2])  // 取前 3 字节（小端序）
+                // 验证：对于小端序，最低有效字节应该在第一位
+                // 例如：78 = 0x0000004E -> [0x4E, 0x00, 0x00]
+                return result
+            }
+            // 偏移量计算：
+            // SDM 数据附加在 NDEF 文件数据的末尾
+            // 偏移量是相对于文件开始的位置（从 0 开始）
+            // 注意：偏移量应该指向 NDEF 消息中 SDM 数据的位置，而不是文件末尾
+            // 如果 URL 中包含占位符（如 &u=...&c=...），偏移量应该指向这些占位符的位置
+            
+            let fileSize = currentSettings.fileSize ?? 256
+            let uidOffset = UInt32(85)
+            let ctrOffset = UInt32(85 + 14 + 3)
+            print("   📊 SDM Offset Calculation:")
+            print("   • File Size: \(fileSize) bytes")
+            print("   • UID Offset: \(uidOffset)")
+            print("   • ReadCounter Offset: \(ctrOffset)")
+            // Build command data
+            // According to NTAG 424 DNA datasheet and NfcDnaKit's changeFileSettings helper:
+            // ChangeFileSettings structure: [FileOption] [AccessRights(2)]
+            // FileSize is NOT included in ChangeFileSettings command (it's read-only or set during file creation)
+            var commandData: [UInt8] = []
+            commandData.append(fileOption)        // 1 byte - FileOption
+            commandData.append(accessRightsByte1) // 1 byte - Access rights byte 1 (0xE0)
+            commandData.append(accessRightsByte2) // 1 byte - Access rights byte 2 (0x00)
+            // SDM
+            commandData.append(sdmOptions)          // [1 byte]
+            commandData.append(sdmAccessRights1)    // [1 byte]
+            commandData.append(sdmAccessRights2)    // [1 byte]
+            // 当前配置：MetaRead: ALL (0xE), FileRead: NONE (0xF)
+            // 所以只需要 UID 和 ReadCounter Offset
+            let uidOffsetBytes = to3BytesLE(uidOffset)
+            let ctrOffsetBytes = to3BytesLE(ctrOffset)
+            commandData.append(contentsOf: uidOffsetBytes) // [3 bytes] - UID Offset (little endian)
+            commandData.append(contentsOf: ctrOffsetBytes) // [3 bytes] - Read Counter Offset (little endian)
+            // 验证字节序和命令结构
+            print("   🔍 Byte Order Verification:")
+            print("   • UID Offset: \(uidOffset) -> [\(uidOffsetBytes.map { String(format: "%02X", $0) }.joined(separator: " "))]")
+            print("   • ReadCounter Offset: \(ctrOffset) -> [\(ctrOffsetBytes.map { String(format: "%02X", $0) }.joined(separator: " "))]")
+            print("   • Command data length: \(commandData.count) bytes")
+            print("   • Expected structure: FileOption(1) + AccessRights(2) + SDMOptions(1) + SDMAccessRights(2) + UIDOffset(3) + ReadCounterOffset(3) = 12 bytes")
+            
+            // 注意：当 fileReadPermission 是 NONE (0xF) 时，不需要包含 MAC 相关偏移量
+            // 这是正确的，因为 FileRead 是 NONE
+            print("   📋 SDM Command Data Structure:")
+            print("   • FileOption: 0x\(String(format: "%02X", fileOption)) (bit 6=SDM, bits 0-1=PLAIN)")
+            print("   • AccessRights: 0x\(String(format: "%02X", accessRightsByte1)) 0x\(String(format: "%02X", accessRightsByte2))")
+            print("   • SDM Options: 0x\(String(format: "%02X", sdmOptions)) (UID=\(sdmOptions & 0x80 != 0), Counter=\(sdmOptions & 0x40 != 0), ASCII=\(sdmOptions & 0x01 != 0))")
+            print("   • SDM Access Rights: 0x\(String(format: "%02X", sdmAccessRights1)) 0x\(String(format: "%02X", sdmAccessRights2))")
+            print("     - MetaRead: 0x\(String(format: "%X", (sdmAccessRights1 >> 4) & 0x0F)) (\((sdmAccessRights1 >> 4) & 0x0F == 0xE ? "ALL" : (sdmAccessRights1 >> 4) & 0x0F == 0xF ? "NONE" : "KEY"))")
+            print("     - FileRead: 0x\(String(format: "%X", sdmAccessRights1 & 0x0F)) (\(sdmAccessRights1 & 0x0F == 0xE ? "ALL" : sdmAccessRights1 & 0x0F == 0xF ? "NONE" : "KEY"))")
+            print("     - CounterRet: 0x\(String(format: "%X", sdmAccessRights2 & 0x0F)) (\(sdmAccessRights2 & 0x0F == 0xE ? "ALL" : sdmAccessRights2 & 0x0F == 0xF ? "NONE" : "KEY"))")
+            print("   • UID Offset: \(uidOffset) (0x\(String(format: "%06X", uidOffset)))")
+            print("   • ReadCounter Offset: \(ctrOffset) (0x\(String(format: "%06X", ctrOffset)))")
+            print("   • Command data bytes: \(commandData.map { String(format: "%02X", $0) }.joined(separator: " "))")
+            print("   • Total command data length: \(commandData.count) bytes")
+            print("   • Expected: 12 bytes (FileOption(1) + AccessRights(2) + SDMOptions(1) + SDMAccessRights(2) + UIDOffset(3) + ReadCounterOffset(3))")
+            
+            // 注意：加密函数应该将其填充为 16 字节，带上 1 字节 FileNo 后，
+            // Lc 字段（Outbound 的第 5 字节）应该是 1 + 16 + 8 = 25 (0x19)。
             print("\n   Target Configuration:")
             print("   • Read Access: ALL (0xE) - Open for all readers (iOS background detection) ✅")
             print("   • Write Access: KEY_0 (0x0) - REQUIRES AUTHENTICATION (blocks unauthorized writes) 🔒")
@@ -881,45 +1116,45 @@ class NTAG424DNAScanner: NSObject, NFCTagReaderSessionDelegate {
             print("   Command data: \(commandData.map { String(format: "%02X", $0) }.joined(separator: " "))")
             print("   Expected: 00 00 E0 (FileOption=0x00, AccessRights=0x00 0xE0)")
             print("   Note: FileSize is NOT included in ChangeFileSettings command")
-             
-             // Re-authenticate to ensure session is still valid before changing file settings
-             print("\nStep 3: Re-authenticating to ensure session is valid...")
-             let keyBytes = self.dataToBytes(self.passwordData)
-             communicator.authenticateEV2First(keyNum: 0, keyData: keyBytes) { [weak self] authSuccess, authError in
-                 guard let self = self else { return }
-                 
-                 if let authError = authError {
-                     let errorMsg = "Re-authentication failed: \(authError.localizedDescription)"
-                     print("❌ \(errorMsg)")
-                     session.invalidate(errorMessage: errorMsg)
-                     self.onConfigureFileAccessCompleted?(nil, authError)
-                     return
-                 }
-                 
-                 if !authSuccess {
-                     let errorMsg = "Re-authentication failed"
-                     print("❌ \(errorMsg)")
-                     session.invalidate(errorMessage: errorMsg)
-                     self.onConfigureFileAccessCompleted?(nil, NSError(domain: "NTAG424DNAScanner", code: -1, userInfo: [NSLocalizedDescriptionKey: errorMsg]))
-                     return
-                 }
-                 
-                 print("✅ Re-authenticated successfully")
-                 print("\nStep 4: Sending ChangeFileSettings command (0x5F) with encryption and MAC protection...")
-                 
-                 // Use nxpEncryptedCommand for ChangeFileSettings
-                 // Note: ChangeFileSettings (0x5F) requires authentication and MAC protection/encryption
-                 communicator.nxpEncryptedCommand(command: 0x5F, header: [fileNo], data: commandData) { [weak self] result, error in
-                     guard let self = self else { return }
-                     
-                     if let error = error {
-                         let errorMsg = "Failed to configure file access: \(error.localizedDescription)"
-                         print("❌ \(errorMsg)")
-                         session.invalidate(errorMessage: errorMsg)
-                         self.onConfigureFileAccessCompleted?(nil, error)
-                         return
-                     }
-                     
+            
+            // Re-authenticate to ensure session is still valid before changing file settings
+            print("\nStep 3: Re-authenticating to ensure session is valid...")
+            let keyBytes = self.dataToBytes(self.passwordData)
+            communicator.authenticateEV2First(keyNum: 0, keyData: keyBytes) { [weak self] authSuccess, authError in
+                guard let self = self else { return }
+                
+                if let authError = authError {
+                    let errorMsg = "Re-authentication failed: \(authError.localizedDescription)"
+                    print("❌ \(errorMsg)")
+                    session.invalidate(errorMessage: errorMsg)
+                    self.onConfigureFileAccessCompleted?(nil, authError)
+                    return
+                }
+                
+                if !authSuccess {
+                    let errorMsg = "Re-authentication failed"
+                    print("❌ \(errorMsg)")
+                    session.invalidate(errorMessage: errorMsg)
+                    self.onConfigureFileAccessCompleted?(nil, NSError(domain: "NTAG424DNAScanner", code: -1, userInfo: [NSLocalizedDescriptionKey: errorMsg]))
+                    return
+                }
+                
+                print("✅ Re-authenticated successfully")
+                print("\nStep 4: Sending ChangeFileSettings command (0x5F) with encryption and MAC protection...")
+                
+                // Use nxpEncryptedCommand for ChangeFileSettings
+                // Note: ChangeFileSettings (0x5F) requires authentication and MAC protection/encryption
+                communicator.nxpEncryptedCommand(command: 0x5F, header: [fileNo], data: commandData) { [weak self] result, error in
+                    guard let self = self else { return }
+                    
+                    if let error = error {
+                        let errorMsg = "Failed to configure file access: \(error.localizedDescription)"
+                        print("❌ \(errorMsg)")
+                        session.invalidate(errorMessage: errorMsg)
+                        self.onConfigureFileAccessCompleted?(nil, error)
+                        return
+                    }
+                    
                     // Check status word
                     if result.statusMajor == 0x91 && result.statusMinor == 0x00 {
                         print("✅ NDEF file ChangeFileSettings command succeeded!")
@@ -997,34 +1232,34 @@ class NTAG424DNAScanner: NSObject, NFCTagReaderSessionDelegate {
                             self.communicator = nil
                             self.onConfigureFileAccessCompleted?(successMsg, nil)
                         }
-                     } else {
-                         // Error status word received
-                         let statusCode = (Int(result.statusMajor) << 8) | Int(result.statusMinor)
-                         var errorMsg = "Configuration failed with status: 0x\(String(format: "%02X", result.statusMajor))\(String(format: "%02X", result.statusMinor))"
-                         
-                         // Decode common error codes
-                         if result.statusMajor == 0x91 {
-                             switch result.statusMinor {
-                             case 0x7E:
-                                 errorMsg += " Length of command string invalid."
-                             case 0x1E:
-                                 errorMsg += " (Insufficient NV-Memory to complete command)"
-                             case 0x7C:
-                                 errorMsg += " (Length error - command data length incorrect)"
-                                 print("   💡 Hint: Command data length is \(commandData.count) bytes. Expected: 3 bytes (FileOption + AccessRights(2))")
-                             default:
-                                 errorMsg += " (Error code: 0x\(String(format: "%02X", result.statusMinor))"
-                             }
-                         }
-                         
-                         print("❌ \(errorMsg)")
-                         session.invalidate(errorMessage: errorMsg)
-                         self.onConfigureFileAccessCompleted?(nil, NSError(domain: "NTAG424DNAScanner", code: statusCode, userInfo: [NSLocalizedDescriptionKey: errorMsg]))
-                     }
-                 }
-             }
-         }
-     }
+                    } else {
+                        // Error status word received
+                        let statusCode = (Int(result.statusMajor) << 8) | Int(result.statusMinor)
+                        var errorMsg = "Configuration failed with status: 0x\(String(format: "%02X", result.statusMajor))\(String(format: "%02X", result.statusMinor))"
+                        
+                        // Decode common error codes
+                        if result.statusMajor == 0x91 {
+                            switch result.statusMinor {
+                            case 0x7E:
+                                errorMsg += " Length of command string invalid."
+                            case 0x1E:
+                                errorMsg += " (Insufficient NV-Memory to complete command)"
+                            case 0x7C:
+                                errorMsg += " (Length error - command data length incorrect)"
+                                print("   💡 Hint: Command data length is \(commandData.count) bytes. Expected: 3 bytes (FileOption + AccessRights(2))")
+                            default:
+                                errorMsg += " (Error code: 0x\(String(format: "%02X", result.statusMinor))"
+                            }
+                        }
+                        
+                        print("❌ \(errorMsg)")
+                        session.invalidate(errorMessage: errorMsg)
+                        self.onConfigureFileAccessCompleted?(nil, NSError(domain: "NTAG424DNAScanner", code: statusCode, userInfo: [NSLocalizedDescriptionKey: errorMsg]))
+                    }
+                }
+            }
+        }
+    }
     
     // Perform the actual write operation
     // According to NTAG 424 DNA datasheet, we must use ISO 7816 commands (WriteData) to write to NDEF file
@@ -1048,13 +1283,13 @@ class NTAG424DNAScanner: NSObject, NFCTagReaderSessionDelegate {
         
         // Write to NDEF file (file number 2)
         // According to NTAG 424 DNA datasheet section 8.2.3.1 StandardData file:
-        // "The writing operations of single frames up to 128 bytes with a WriteData or ISOUpdateBinary 
+        // "The writing operations of single frames up to 128 bytes with a WriteData or ISOUpdateBinary
         //  command are also tearing protected."
-        // 
+        //
         // IMPORTANT: nxpNativeCommand uses UInt8 for APDU packet length, which can only represent 0-255.
         // The APDU structure is: [CLA INS P1 P2 Lc] [Header] [Data] [Le]
         // Where Lc (length of command data) is a UInt8.
-        // 
+        //
         // For writeFileData, the packet structure is:
         // Header: [fileNum] + [offset(3)] + [dataSize(3)] = 7 bytes
         // Data: [data bytes]
@@ -1175,7 +1410,7 @@ class NTAG424DNAScanner: NSObject, NFCTagReaderSessionDelegate {
     // Where:
     //   - NLEN = 2-byte length field (big-endian) indicating NDEF message length (0x0000 to 0xFFFE)
     //   - NDEF Data = The actual NDEF message bytes
-    // 
+    //
     // This matches the format used by NXP TagWriter and other standard tools.
     // Example from working tag: [00 47] [D1 02 42 53 70 ...] where 0x0047 = 71 bytes
     private func createNDEFMessage(from text: String) -> Data? {
